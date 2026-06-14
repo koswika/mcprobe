@@ -64,6 +64,24 @@ if command -v dig &> /dev/null; then
     fi
 else
     echo "dig not installed, skipping DNS lookup"
+    ip=""
+fi
+
+if [ -n "$ip" ] && command -v curl &> /dev/null; then
+    echo ""
+    echo "GEOLOCATION OF SERVER IP ($ip):"
+    geo=$(curl -s "http://ip-api.com/json/$ip?fields=status,country,city,regionName,isp")
+    if echo "$geo" | grep -q '"status":"success"'; then
+        country=$(echo "$geo" | sed -n 's/.*"country":"\([^"]*\)".*/\1/p')
+        city=$(echo "$geo" | sed -n 's/.*"city":"\([^"]*\)".*/\1/p')
+        region=$(echo "$geo" | sed -n 's/.*"regionName":"\([^"]*\)".*/\1/p')
+        isp=$(echo "$geo" | sed -n 's/.*"isp":"\([^"]*\)".*/\1/p')
+        echo "  Country: ${country:-unknown}"
+        echo "  City/Region: ${city:-unknown}, ${region:-unknown}"
+        echo "  ISP/Organization: ${isp:-unknown}"
+    else
+        echo "  Geolocation query failed."
+    fi
 fi
 
 echo ""
