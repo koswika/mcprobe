@@ -5,11 +5,16 @@ set -e
 WATCH_SECONDS=0
 SERVER=""
 PORT="25565"
+DISCORD_WEBHOOK=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --watch)
             WATCH_SECONDS="$2"
+            shift 2
+            ;;
+        --discord)
+            DISCORD_WEBHOOK="$2"
             shift 2
             ;;
         *)
@@ -24,18 +29,33 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -z "$SERVER" ]; then
-    echo "Usage: $0 <server_address> [port] [--watch N]"
-    echo "Example: $0 play.hypixel.net --watch 10"
+    echo "Usage: $0 <server_address> [port] [--watch N] [--discord WEBHOOK_URL]"
+    echo "Example: $0 play.hypixel.net --watch 10 --discord https://discord.com/api/webhooks/..."
     exit 1
+fi
+
+if ! command -v python3 &> /dev/null; then
+    echo "python3 not found. Installing..."
+    sudo pacman -S --noconfirm python3
+fi
+
+if ! command -v dig &> /dev/null; then
+    echo "dig not found. Installing bind-tools..."
+    sudo pacman -S --noconfirm bind-tools
+fi
+
+if ! command -v curl &> /dev/null; then
+    echo "curl not found. Installing..."
+    sudo pacman -S --noconfirm curl
+fi
+
+if ! command -v jq &> /dev/null; then
+    echo "jq not found. Installing..."
+    sudo pacman -S --noconfirm jq
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$SCRIPT_DIR/.mcstatus_venv"
-
-if ! command -v python3 &> /dev/null; then
-    echo "ERROR: python3 not found. Please install Python 3.6+."
-    exit 1
-fi
 
 if [ ! -d "$VENV_DIR" ]; then
     echo "Creating virtual environment..."
@@ -53,26 +73,139 @@ hr() {
     echo "============================================================"
 }
 
+add_field() {
+    local fields="$1"
+    local name="$2"
+    local value="$3"
+    local inline="$4"
+    echo "$fields" | jq --arg n "$name" --arg v "$value" --argjson i "$inline" \
+        '. + [{"name": $n, "value": $v, "inline": $i}]'
+}
+
+send_discord_embed() {
+    if [ -z "$DISCORD_WEBHOOK" ] || ! command -v curl &> /dev/null || ! command -v jq &> /dev/null; then
+        return
+    fi
+
+    local online="$1"
+    local version="$2"
+    local protocol="$3"
+    local motd="$4"
+    local players="$5"
+    local latency="$6"
+    local software="$7"
+    local plugins="$8"
+    local player_list="$9"
+    local dns_a="${10}"
+    local dns_cname="${11}"
+    local dns_srv="${12}"
+    local geo_country="${13}"
+    local geo_city="${14}"
+    local geo_region="${15}"
+    local geo_isp="${16}"
+    local error_msg="${17}"
+
+    local timestamp
+    timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+    local color title description
+    if [ "$online" = "true" ]; then
+        color=5763719
+        title="🟢  $SERVER — ONLINE"
+        description="$(printf '**MOTD**\n```\n%s\n```' "$motd")"
+    else
+        color=15548997
+        title="🔴  $SERVER — OFFLINE"
+        description="$(printf 'The server could not be reached.\n```\n%s\n```' "$error_msg")"
+    fi
+
+    local fields='[]'
+
+    if [ "$online" = "true" ]; then
+        fields=$(add_field "$fields" "👥 Players" "$players" true)
+        fields=$(add_field "$fields" "📶 Latency" "${latency} ms" true)
+        fields=$(add_field "$fields" "🔖 Version" "$version" true)
+        fields=$(add_field "$fields" "🔢 Protocol" "$protocol" true)
+
+        if [ -n "$software" ]; then
+            fields=$(add_field "$fields" "🛠 Software" "$software" true)
+        fi
+
+        if [ -n "$plugins" ] && [ "$plugins" != "none" ]; then
+            fields=$(add_field "$fields" "🔌 Plugins" "$plugins" false)
+        fi
+
+        if [ -n "$player_list" ]; then
+            fields=$(add_field "$fields" "🧑 Online Players" "$player_list" false)
+        fi
+    fi
+
+    local dns_value
+    dns_value=""
+    [ -n "$dns_a" ]     && dns_value="${dns_value}A: ${dns_a}"$'\n'
+    [ -n "$dns_cname" ] && dns_value="${dns_value}CNAME: ${dns_cname}"$'\n'
+    [ -n "$dns_srv" ]   && dns_value="${dns_value}SRV: ${dns_srv}"$'\n'
+    [ -z "$dns_value" ] && dns_value="No records found"
+    dns_value="${dns_value%$'\n'}"
+    fields=$(add_field "$fields" "🌐 DNS Records" "$dns_value" false)
+
+    if [ -n "$dns_a" ] || [ -n "$geo_country" ]; then
+        local geo_value
+        geo_value=""
+        [ -n "$dns_a" ]       && geo_value="${geo_value}IP: ${dns_a}"$'\n'
+        [ -n "$geo_country" ] && geo_value="${geo_value}Country: ${geo_country}"$'\n'
+        [ -n "$geo_city" ]    && geo_value="${geo_value}City/Region: ${geo_city}, ${geo_region}"$'\n'
+        [ -n "$geo_isp" ]     && geo_value="${geo_value}ISP: ${geo_isp}"$'\n'
+        geo_value="${geo_value%$'\n'}"
+        fields=$(add_field "$fields" "🌍 Server Location" "$geo_value" false)
+    fi
+
+    local payload
+    payload=$(jq -n \
+        --arg title "$title" \
+        --arg description "$description" \
+        --argjson color "$color" \
+        --argjson fields "$fields" \
+        --arg timestamp "$timestamp" \
+        --arg footer "mcstatus • $SERVER:$PORT" \
+        '{
+            "embeds": [{
+                "title": $title,
+                "description": $description,
+                "color": $color,
+                "fields": $fields,
+                "footer": {"text": $footer},
+                "timestamp": $timestamp
+            }]
+        }')
+
+    curl -s -X POST -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK" > /dev/null
+}
+
 run_query() {
     hr
     echo "MINECRAFT SERVER INFORMATION for $SERVER"
     hr
 
+    local dns_a="" dns_cname="" dns_srv=""
+    local geo_country="" geo_city="" geo_region="" geo_isp=""
+
     if command -v dig &> /dev/null; then
         echo ""
         echo "DNS RECORDS:"
-        ip=$(dig +short "$SERVER" A | head -1)
-        if [ -n "$ip" ]; then
-            echo "  A record: $ip"
-        fi
-        cname=$(dig +short "$SERVER" CNAME | head -1)
-        if [ -n "$cname" ]; then
-            echo "  CNAME: $cname"
-        fi
-        srv=$(dig +short "_minecraft._tcp.$SERVER" SRV)
-        if [ -n "$srv" ]; then
-            srv_port=$(echo "$srv" | awk '{print $3}')
-            srv_target=$(echo "$srv" | awk '{print $4}' | sed 's/\.$//')
+        dns_a=$(dig +short "$SERVER" A | head -1)
+        [ -n "$dns_a" ] && echo "  A record: $dns_a"
+
+        dns_cname=$(dig +short "$SERVER" CNAME | head -1)
+        [ -n "$dns_cname" ] && echo "  CNAME: $dns_cname"
+
+        local srv_raw
+        srv_raw=$(dig +short "_minecraft._tcp.$SERVER" SRV)
+        if [ -n "$srv_raw" ]; then
+            local srv_port srv_target
+            srv_port=$(echo "$srv_raw" | awk '{print $3}')
+            srv_target=$(echo "$srv_raw" | awk '{print $4}' | sed 's/\.$//')
+            dns_srv="port $srv_port → $srv_target"
             echo "  SRV: port $srv_port target $srv_target"
             if [ "$srv_port" != "25565" ]; then
                 PORT="$srv_port"
@@ -83,21 +216,21 @@ run_query() {
         fi
     else
         echo "dig not installed, skipping DNS lookup"
-        ip=""
     fi
 
-    if [ -n "$ip" ] && command -v curl &> /dev/null; then
+    if [ -n "$dns_a" ] && command -v curl &> /dev/null; then
         echo ""
-        echo "GEOLOCATION OF SERVER IP ($ip):"
-        geo=$(curl -s "http://ip-api.com/json/$ip?fields=status,country,city,regionName,isp")
+        echo "GEOLOCATION OF SERVER IP ($dns_a):"
+        local geo
+        geo=$(curl -s "http://ip-api.com/json/$dns_a?fields=status,country,city,regionName,isp")
         if echo "$geo" | grep -q '"status":"success"'; then
-            country=$(echo "$geo" | sed -n 's/.*"country":"\([^"]*\)".*/\1/p')
-            city=$(echo "$geo" | sed -n 's/.*"city":"\([^"]*\)".*/\1/p')
-            region=$(echo "$geo" | sed -n 's/.*"regionName":"\([^"]*\)".*/\1/p')
-            isp=$(echo "$geo" | sed -n 's/.*"isp":"\([^"]*\)".*/\1/p')
-            echo "  Country: ${country:-unknown}"
-            echo "  City/Region: ${city:-unknown}, ${region:-unknown}"
-            echo "  ISP/Organization: ${isp:-unknown}"
+            geo_country=$(echo "$geo" | sed -n 's/.*"country":"\([^"]*\)".*/\1/p')
+            geo_city=$(echo "$geo" | sed -n 's/.*"city":"\([^"]*\)".*/\1/p')
+            geo_region=$(echo "$geo" | sed -n 's/.*"regionName":"\([^"]*\)".*/\1/p')
+            geo_isp=$(echo "$geo" | sed -n 's/.*"isp":"\([^"]*\)".*/\1/p')
+            echo "  Country: ${geo_country:-unknown}"
+            echo "  City/Region: ${geo_city:-unknown}, ${geo_region:-unknown}"
+            echo "  ISP/Organization: ${geo_isp:-unknown}"
         else
             echo "  Geolocation query failed."
         fi
@@ -107,8 +240,9 @@ run_query() {
     echo "SERVER STATUS ($SERVER:$PORT)"
     echo "-----------------------------"
 
-    python3 -c "
-import sys, re, time
+    local status_output
+    status_output=$(python3 -c "
+import sys, re
 from mcstatus import JavaServer
 
 def clean_text(text):
@@ -151,11 +285,39 @@ try:
     else:
         print('Note: Query protocol disabled (no software/player list)')
 except Exception as e:
+    print('Status: OFFLINE')
     print('ERROR:', str(e))
-    sys.exit(1)
-"
+")
 
+    echo "$status_output"
     hr
+
+    if [ -n "$DISCORD_WEBHOOK" ]; then
+        local s_version s_protocol s_motd s_players s_latency s_software s_plugins s_player_list s_error
+
+        s_version=$(echo "$status_output"     | grep "^Version:"            | sed 's/^Version: //')
+        s_protocol=$(echo "$status_output"    | grep "^Protocol:"           | sed 's/^Protocol: //')
+        s_motd=$(echo "$status_output"        | grep "^MOTD:"               | sed 's/^MOTD: //')
+        s_players=$(echo "$status_output"     | grep "^Players:"            | sed 's/^Players: //')
+        s_latency=$(echo "$status_output"     | grep "^Latency (ms):"       | sed 's/^Latency (ms): //')
+        s_software=$(echo "$status_output"    | grep "^Software:"           | sed 's/^Software: //')
+        s_plugins=$(echo "$status_output"     | grep "^Plugins"             | sed 's/^Plugins[^:]*: //')
+        s_player_list=$(echo "$status_output" | grep "^Online players sample:" | sed 's/^Online players sample: //')
+        s_error=$(echo "$status_output"       | grep "^ERROR:"              | sed 's/^ERROR: //')
+
+        if echo "$status_output" | grep -q "^Status: ONLINE"; then
+            send_discord_embed "true" \
+                "$s_version" "$s_protocol" "$s_motd" "$s_players" "$s_latency" \
+                "$s_software" "$s_plugins" "$s_player_list" \
+                "$dns_a" "$dns_cname" "$dns_srv" \
+                "$geo_country" "$geo_city" "$geo_region" "$geo_isp" ""
+        else
+            send_discord_embed "false" \
+                "" "" "" "" "" "" "" "" \
+                "$dns_a" "$dns_cname" "$dns_srv" \
+                "$geo_country" "$geo_city" "$geo_region" "$geo_isp" "$s_error"
+        fi
+    fi
 }
 
 cleanup() {
