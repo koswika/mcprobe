@@ -6,6 +6,7 @@ WATCH_SECONDS=0
 SERVER=""
 PORT="25565"
 DISCORD_WEBHOOK=""
+JSON_OUTPUT=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -16,6 +17,10 @@ while [[ $# -gt 0 ]]; do
         --discord)
             DISCORD_WEBHOOK="$2"
             shift 2
+            ;;
+        --json)
+            JSON_OUTPUT=true
+            shift
             ;;
         *)
             if [ -z "$SERVER" ]; then
@@ -29,8 +34,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -z "$SERVER" ]; then
-    echo "Usage: $0 <server_address> [port] [--watch N] [--discord WEBHOOK_URL]"
-    echo "Example: $0 play.hypixel.net --watch 10 --discord https://discord.com/api/webhooks/..."
+    echo "Usage: $0 <server_address> [port] [--watch N] [--discord WEBHOOK_URL] [--json]" >&2
+    echo "Example: $0 play.hypixel.net --watch 10 --discord https://discord.com/api/webhooks/..." >&2
     exit 1
 fi
 
@@ -58,19 +63,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$SCRIPT_DIR/.mcstatus_venv"
 
 if [ ! -d "$VENV_DIR" ]; then
-    echo "Creating virtual environment..."
+    echo "Creating virtual environment..." >&2
     python3 -m venv "$VENV_DIR"
 fi
 
 source "$VENV_DIR/bin/activate"
 
 if ! python -c "import mcstatus" &> /dev/null; then
-    echo "Installing mcstatus..."
+    echo "Installing mcstatus..." >&2
     pip install mcstatus > /dev/null
 fi
 
 hr() {
-    echo "============================================================"
+    [ "$JSON_OUTPUT" = false ] && echo "============================================================"
 }
 
 add_field() {
@@ -183,21 +188,25 @@ send_discord_embed() {
 }
 
 run_query() {
-    hr
-    echo "MINECRAFT SERVER INFORMATION for $SERVER"
-    hr
-
     local dns_a="" dns_cname="" dns_srv=""
     local geo_country="" geo_city="" geo_region="" geo_isp=""
 
+    if ! $JSON_OUTPUT; then
+        hr
+        echo "MINECRAFT SERVER INFORMATION for $SERVER"
+        hr
+    fi
+
     if command -v dig &> /dev/null; then
-        echo ""
-        echo "DNS RECORDS:"
+        if ! $JSON_OUTPUT; then
+            echo ""
+            echo "DNS RECORDS:"
+        fi
         dns_a=$(dig +short "$SERVER" A | head -1)
-        [ -n "$dns_a" ] && echo "  A record: $dns_a"
+        [ -n "$dns_a" ] && { [ "$JSON_OUTPUT" = false ] && echo "  A record: $dns_a"; }
 
         dns_cname=$(dig +short "$SERVER" CNAME | head -1)
-        [ -n "$dns_cname" ] && echo "  CNAME: $dns_cname"
+        [ -n "$dns_cname" ] && { [ "$JSON_OUTPUT" = false ] && echo "  CNAME: $dns_cname"; }
 
         local srv_raw
         srv_raw=$(dig +short "_minecraft._tcp.$SERVER" SRV)
@@ -206,21 +215,25 @@ run_query() {
             srv_port=$(echo "$srv_raw" | awk '{print $3}')
             srv_target=$(echo "$srv_raw" | awk '{print $4}' | sed 's/\.$//')
             dns_srv="port $srv_port → $srv_target"
-            echo "  SRV: port $srv_port target $srv_target"
+            if [ "$JSON_OUTPUT" = false ]; then
+                echo "  SRV: port $srv_port target $srv_target"
+            fi
             if [ "$srv_port" != "25565" ]; then
                 PORT="$srv_port"
-                echo "  Using SRV port $PORT"
+                [ "$JSON_OUTPUT" = false ] && echo "  Using SRV port $PORT"
             fi
         else
-            echo "  No Minecraft SRV record"
+            [ "$JSON_OUTPUT" = false ] && echo "  No Minecraft SRV record"
         fi
     else
-        echo "dig not installed, skipping DNS lookup"
+        [ "$JSON_OUTPUT" = false ] && echo "dig not installed, skipping DNS lookup"
     fi
 
     if [ -n "$dns_a" ] && command -v curl &> /dev/null; then
-        echo ""
-        echo "GEOLOCATION OF SERVER IP ($dns_a):"
+        if ! $JSON_OUTPUT; then
+            echo ""
+            echo "GEOLOCATION OF SERVER IP ($dns_a):"
+        fi
         local geo
         geo=$(curl -s "http://ip-api.com/json/$dns_a?fields=status,country,city,regionName,isp")
         if echo "$geo" | grep -q '"status":"success"'; then
@@ -228,21 +241,25 @@ run_query() {
             geo_city=$(echo "$geo" | sed -n 's/.*"city":"\([^"]*\)".*/\1/p')
             geo_region=$(echo "$geo" | sed -n 's/.*"regionName":"\([^"]*\)".*/\1/p')
             geo_isp=$(echo "$geo" | sed -n 's/.*"isp":"\([^"]*\)".*/\1/p')
-            echo "  Country: ${geo_country:-unknown}"
-            echo "  City/Region: ${geo_city:-unknown}, ${geo_region:-unknown}"
-            echo "  ISP/Organization: ${geo_isp:-unknown}"
+            if ! $JSON_OUTPUT; then
+                echo "  Country: ${geo_country:-unknown}"
+                echo "  City/Region: ${geo_city:-unknown}, ${geo_region:-unknown}"
+                echo "  ISP/Organization: ${geo_isp:-unknown}"
+            fi
         else
-            echo "  Geolocation query failed."
+            [ "$JSON_OUTPUT" = false ] && echo "  Geolocation query failed."
         fi
     fi
 
-    echo ""
-    echo "SERVER STATUS ($SERVER:$PORT)"
-    echo "-----------------------------"
+    if ! $JSON_OUTPUT; then
+        echo ""
+        echo "SERVER STATUS ($SERVER:$PORT)"
+        echo "-----------------------------"
+    fi
 
     local status_output
     status_output=$(python3 -c "
-import sys, re
+import sys, re, json
 from mcstatus import JavaServer
 
 def clean_text(text):
@@ -289,8 +306,10 @@ except Exception as e:
     print('ERROR:', str(e))
 ")
 
-    echo "$status_output"
-    hr
+    if ! $JSON_OUTPUT; then
+        echo "$status_output"
+        hr
+    fi
 
     if [ -n "$DISCORD_WEBHOOK" ]; then
         local s_version s_protocol s_motd s_players s_latency s_software s_plugins s_player_list s_error
@@ -318,6 +337,65 @@ except Exception as e:
                 "$geo_country" "$geo_city" "$geo_region" "$geo_isp" "$s_error"
         fi
     fi
+
+    if $JSON_OUTPUT; then
+        local status_line=$(echo "$status_output" | grep "^Status:" | sed 's/^Status: //')
+        local version_line=$(echo "$status_output" | grep "^Version:" | sed 's/^Version: //')
+        local protocol_line=$(echo "$status_output" | grep "^Protocol:" | sed 's/^Protocol: //')
+        local motd_line=$(echo "$status_output" | grep "^MOTD:" | sed 's/^MOTD: //')
+        local players_line=$(echo "$status_output" | grep "^Players:" | sed 's/^Players: //')
+        local latency_line=$(echo "$status_output" | grep "^Latency (ms):" | sed 's/^Latency (ms): //')
+        local software_line=$(echo "$status_output" | grep "^Software:" | sed 's/^Software: //')
+        local plugins_line=$(echo "$status_output" | grep "^Plugins" | sed 's/^Plugins[^:]*: //')
+        local player_sample_line=$(echo "$status_output" | grep "^Online players sample:" | sed 's/^Online players sample: //')
+        local error_line=$(echo "$status_output" | grep "^ERROR:" | sed 's/^ERROR: //')
+
+        jq -n \
+            --arg server "$SERVER" \
+            --arg port "$PORT" \
+            --arg status "$status_line" \
+            --arg version "$version_line" \
+            --arg protocol "$protocol_line" \
+            --arg motd "$motd_line" \
+            --arg players "$players_line" \
+            --arg latency "$latency_line" \
+            --arg software "$software_line" \
+            --arg plugins "$plugins_line" \
+            --arg player_sample "$player_sample_line" \
+            --arg error "$error_line" \
+            --arg dns_a "$dns_a" \
+            --arg dns_cname "$dns_cname" \
+            --arg dns_srv "$dns_srv" \
+            --arg geo_country "$geo_country" \
+            --arg geo_city "$geo_city" \
+            --arg geo_region "$geo_region" \
+            --arg geo_isp "$geo_isp" \
+            '{
+                "server": $server,
+                "port": $port,
+                "status": $status,
+                "version": $version,
+                "protocol": $protocol,
+                "motd": $motd,
+                "players": $players,
+                "latency_ms": ($latency | tonumber? // null),
+                "software": $software,
+                "plugins": $plugins,
+                "player_sample": $player_sample,
+                "error": $error,
+                "dns": {
+                    "a": $dns_a,
+                    "cname": $dns_cname,
+                    "srv": $dns_srv
+                },
+                "geolocation": {
+                    "country": $geo_country,
+                    "city": $geo_city,
+                    "region": $geo_region,
+                    "isp": $geo_isp
+                }
+            }'
+    fi
 }
 
 cleanup() {
@@ -327,7 +405,12 @@ cleanup() {
 
 trap cleanup SIGINT SIGTERM
 
-if [ "$WATCH_SECONDS" -gt 0 ]; then
+if [ "$JSON_OUTPUT" = true ] && [ "$WATCH_SECONDS" -gt 0 ]; then
+    while true; do
+        run_query
+        sleep "$WATCH_SECONDS"
+    done
+elif [ "$WATCH_SECONDS" -gt 0 ]; then
     while true; do
         clear
         run_query
