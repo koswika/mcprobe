@@ -7,9 +7,25 @@ SERVER=""
 PORT="25565"
 DISCORD_WEBHOOK=""
 JSON_OUTPUT=false
+PING_ENABLED=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --help|-h)
+            echo "Usage: $0 <server_address> [port] [options]"
+            echo ""
+            echo "Options:"
+            echo "  --watch N               Refresh every N seconds"
+            echo "  --discord WEBHOOK_URL   Send Discord embeds to the given webhook"
+            echo "  --json                  Output raw JSON instead of human-readable text"
+            echo "  --ping                  Ping the resolved IP address (3 packets) and show stats"
+            echo "  --install               Install this script system-wide (to /usr/local/bin)"
+            echo "  --help, -h              Show this help message"
+            echo ""
+            echo "Example:"
+            echo "  $0 play.hypixel.net --watch 10 --discord https://discord.com/api/webhooks/... --ping"
+            exit 0
+            ;;
         --watch)
             WATCH_SECONDS="$2"
             shift 2
@@ -20,6 +36,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --json)
             JSON_OUTPUT=true
+            shift
+            ;;
+        --ping)
+            PING_ENABLED=true
             shift
             ;;
         --install)
@@ -43,8 +63,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -z "$SERVER" ]; then
-    echo "Usage: $0 <server_address> [port] [--watch N] [--discord WEBHOOK_URL] [--json] [--install]" >&2
-    echo "Example: $0 play.hypixel.net --watch 10 --discord https://discord.com/api/webhooks/..." >&2
+    echo "Error: No server address provided." >&2
+    echo "Run '$0 --help' for usage." >&2
     exit 1
 fi
 
@@ -66,6 +86,11 @@ fi
 if ! command -v jq &> /dev/null; then
     echo "jq not found. Installing..."
     sudo pacman -S --noconfirm jq
+fi
+
+if $PING_ENABLED && ! command -v ping &> /dev/null; then
+    echo "ping not found. Installing iputils..."
+    sudo pacman -S --noconfirm iputils
 fi
 
 VENV_DIR="$HOME/.local/share/mcprobe_venv"
@@ -118,6 +143,7 @@ send_discord_embed() {
     local geo_region="${15}"
     local geo_isp="${16}"
     local error_msg="${17}"
+    local ping_stats="${18}"
 
     local timestamp
     timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -125,32 +151,35 @@ send_discord_embed() {
     local color title description
     if [ "$online" = "true" ]; then
         color=5763719
-        title="🟢  $SERVER — ONLINE"
-        description="$(printf '**MOTD**\n```\n%s\n```' "$motd")"
+        title="$SERVER - ONLINE"
+        description="$(printf 'MOTD\n```\n%s\n```' "$motd")"
     else
         color=15548997
-        title="🔴  $SERVER — OFFLINE"
+        title="$SERVER - OFFLINE"
         description="$(printf 'The server could not be reached.\n```\n%s\n```' "$error_msg")"
     fi
 
     local fields='[]'
 
     if [ "$online" = "true" ]; then
-        fields=$(add_field "$fields" "👥 Players" "$players" true)
-        fields=$(add_field "$fields" "📶 Latency" "${latency} ms" true)
-        fields=$(add_field "$fields" "🔖 Version" "$version" true)
-        fields=$(add_field "$fields" "🔢 Protocol" "$protocol" true)
+        fields=$(add_field "$fields" "Players" "$players" true)
+        fields=$(add_field "$fields" "Latency (Minecraft)" "${latency} ms" true)
+        if [ -n "$ping_stats" ]; then
+            fields=$(add_field "$fields" "Ping (ICMP)" "$ping_stats" true)
+        fi
+        fields=$(add_field "$fields" "Version" "$version" true)
+        fields=$(add_field "$fields" "Protocol" "$protocol" true)
 
         if [ -n "$software" ]; then
-            fields=$(add_field "$fields" "🛠 Software" "$software" true)
+            fields=$(add_field "$fields" "Software" "$software" true)
         fi
 
         if [ -n "$plugins" ] && [ "$plugins" != "none" ]; then
-            fields=$(add_field "$fields" "🔌 Plugins" "$plugins" false)
+            fields=$(add_field "$fields" "Plugins" "$plugins" false)
         fi
 
         if [ -n "$player_list" ]; then
-            fields=$(add_field "$fields" "🧑 Online Players" "$player_list" false)
+            fields=$(add_field "$fields" "Online Players" "$player_list" false)
         fi
     fi
 
@@ -161,7 +190,7 @@ send_discord_embed() {
     [ -n "$dns_srv" ]   && dns_value="${dns_value}SRV: ${dns_srv}"$'\n'
     [ -z "$dns_value" ] && dns_value="No records found"
     dns_value="${dns_value%$'\n'}"
-    fields=$(add_field "$fields" "🌐 DNS Records" "$dns_value" false)
+    fields=$(add_field "$fields" "DNS Records" "$dns_value" false)
 
     if [ -n "$dns_a" ] || [ -n "$geo_country" ]; then
         local geo_value
@@ -171,7 +200,7 @@ send_discord_embed() {
         [ -n "$geo_city" ]    && geo_value="${geo_value}City/Region: ${geo_city}, ${geo_region}"$'\n'
         [ -n "$geo_isp" ]     && geo_value="${geo_value}ISP: ${geo_isp}"$'\n'
         geo_value="${geo_value%$'\n'}"
-        fields=$(add_field "$fields" "🌍 Server Location" "$geo_value" false)
+        fields=$(add_field "$fields" "Server Location" "$geo_value" false)
     fi
 
     local payload
@@ -199,6 +228,7 @@ send_discord_embed() {
 run_query() {
     local dns_a="" dns_cname="" dns_srv=""
     local geo_country="" geo_city="" geo_region="" geo_isp=""
+    local ping_stats=""
 
     if ! $JSON_OUTPUT; then
         hr
@@ -223,7 +253,7 @@ run_query() {
             local srv_port srv_target
             srv_port=$(echo "$srv_raw" | awk '{print $3}')
             srv_target=$(echo "$srv_raw" | awk '{print $4}' | sed 's/\.$//')
-            dns_srv="port $srv_port → $srv_target"
+            dns_srv="port $srv_port -> $srv_target"
             if [ "$JSON_OUTPUT" = false ]; then
                 echo "  SRV: port $srv_port target $srv_target"
             fi
@@ -257,6 +287,34 @@ run_query() {
             fi
         else
             [ "$JSON_OUTPUT" = false ] && echo "  Geolocation query failed."
+        fi
+    fi
+
+    if $PING_ENABLED && [ -n "$dns_a" ] && command -v ping &> /dev/null; then
+        if ! $JSON_OUTPUT; then
+            echo ""
+            echo "PING TO SERVER IP ($dns_a):"
+        fi
+        local ping_output
+        ping_output=$(ping -c 3 -W 1 "$dns_a" 2>/dev/null)
+        local packet_loss=$(echo "$ping_output" | grep -oP '\d+(?=% packet loss)' | head -1)
+        if [ -n "$packet_loss" ] && [ "$packet_loss" -eq 100 ]; then
+            ping_stats="100% packet loss (host unreachable)"
+            if ! $JSON_OUTPUT; then
+                echo "  $ping_stats"
+            fi
+        else
+            local rtt_min=$(echo "$ping_output" | grep "rtt min/avg/max/mdev" | awk -F'/' '{print $4}')
+            local rtt_avg=$(echo "$ping_output" | grep "rtt min/avg/max/mdev" | awk -F'/' '{print $5}')
+            local rtt_max=$(echo "$ping_output" | grep "rtt min/avg/max/mdev" | awk -F'/' '{print $6}')
+            if [ -n "$rtt_avg" ]; then
+                ping_stats="min=${rtt_min} ms, avg=${rtt_avg} ms, max=${rtt_max} ms"
+            else
+                ping_stats="ping completed but no RTT data"
+            fi
+            if ! $JSON_OUTPUT; then
+                echo "  $ping_stats"
+            fi
         fi
     fi
 
@@ -338,12 +396,12 @@ except Exception as e:
                 "$s_version" "$s_protocol" "$s_motd" "$s_players" "$s_latency" \
                 "$s_software" "$s_plugins" "$s_player_list" \
                 "$dns_a" "$dns_cname" "$dns_srv" \
-                "$geo_country" "$geo_city" "$geo_region" "$geo_isp" ""
+                "$geo_country" "$geo_city" "$geo_region" "$geo_isp" "" "$ping_stats"
         else
             send_discord_embed "false" \
                 "" "" "" "" "" "" "" "" \
                 "$dns_a" "$dns_cname" "$dns_srv" \
-                "$geo_country" "$geo_city" "$geo_region" "$geo_isp" "$s_error"
+                "$geo_country" "$geo_city" "$geo_region" "$geo_isp" "$s_error" "$ping_stats"
         fi
     fi
 
@@ -379,6 +437,7 @@ except Exception as e:
             --arg geo_city "$geo_city" \
             --arg geo_region "$geo_region" \
             --arg geo_isp "$geo_isp" \
+            --arg ping "$ping_stats" \
             '{
                 "server": $server,
                 "port": $port,
@@ -402,7 +461,8 @@ except Exception as e:
                     "city": $geo_city,
                     "region": $geo_region,
                     "isp": $geo_isp
-                }
+                },
+                "ping_stats": $ping
             }'
     fi
 }
