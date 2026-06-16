@@ -2,12 +2,17 @@
 
 set -e
 
+VERSION="1.2.0"
+
 WATCH_SECONDS=0
 SERVER=""
 PORT="25565"
 DISCORD_WEBHOOK=""
 JSON_OUTPUT=false
 PING_ENABLED=false
+ALERT_ENABLED=false
+SHORT_OUTPUT=false
+FAVICON_PATH=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -19,11 +24,19 @@ while [[ $# -gt 0 ]]; do
             echo "  --discord WEBHOOK_URL   Send Discord embeds to the given webhook"
             echo "  --json                  Output raw JSON instead of human-readable text"
             echo "  --ping                  Ping the resolved IP address (3 packets) and show stats"
+            echo "  --alert                 With --watch and --discord, send only on status change"
+            echo "  --short                 Minimal output: only server, players, latency, MOTD"
+            echo "  --favicon [FILE]        Save server favicon as PNG (default: server_icon.png)"
+            echo "  --version               Show version information and exit"
             echo "  --install               Install this script system-wide (to /usr/local/bin)"
             echo "  --help, -h              Show this help message"
             echo ""
             echo "Example:"
-            echo "  $0 play.hypixel.net --watch 10 --discord https://discord.com/api/webhooks/... --ping"
+            echo "  $0 play.hypixel.net --watch 10 --discord https://discord.com/api/webhooks/... --ping --favicon icon.png"
+            exit 0
+            ;;
+        --version)
+            echo "mcprobe version $VERSION"
             exit 0
             ;;
         --watch)
@@ -41,6 +54,23 @@ while [[ $# -gt 0 ]]; do
         --ping)
             PING_ENABLED=true
             shift
+            ;;
+        --alert)
+            ALERT_ENABLED=true
+            shift
+            ;;
+        --short)
+            SHORT_OUTPUT=true
+            shift
+            ;;
+        --favicon)
+            if [[ -n "$2" && "$2" != --* ]]; then
+                FAVICON_PATH="$2"
+                shift 2
+            else
+                FAVICON_PATH="server_icon.png"
+                shift
+            fi
             ;;
         --install)
             echo "Installing mcprobe to /usr/local/bin..."
@@ -167,40 +197,41 @@ send_discord_embed() {
         if [ -n "$ping_stats" ]; then
             fields=$(add_field "$fields" "Ping (ICMP)" "$ping_stats" true)
         fi
-        fields=$(add_field "$fields" "Version" "$version" true)
-        fields=$(add_field "$fields" "Protocol" "$protocol" true)
-
-        if [ -n "$software" ]; then
-            fields=$(add_field "$fields" "Software" "$software" true)
-        fi
-
-        if [ -n "$plugins" ] && [ "$plugins" != "none" ]; then
-            fields=$(add_field "$fields" "Plugins" "$plugins" false)
-        fi
-
-        if [ -n "$player_list" ]; then
-            fields=$(add_field "$fields" "Online Players" "$player_list" false)
+        if [ "$SHORT_OUTPUT" = false ]; then
+            fields=$(add_field "$fields" "Version" "$version" true)
+            fields=$(add_field "$fields" "Protocol" "$protocol" true)
+            if [ -n "$software" ]; then
+                fields=$(add_field "$fields" "Software" "$software" true)
+            fi
+            if [ -n "$plugins" ] && [ "$plugins" != "none" ]; then
+                fields=$(add_field "$fields" "Plugins" "$plugins" false)
+            fi
+            if [ -n "$player_list" ]; then
+                fields=$(add_field "$fields" "Online Players" "$player_list" false)
+            fi
         fi
     fi
 
-    local dns_value
-    dns_value=""
-    [ -n "$dns_a" ]     && dns_value="${dns_value}A: ${dns_a}"$'\n'
-    [ -n "$dns_cname" ] && dns_value="${dns_value}CNAME: ${dns_cname}"$'\n'
-    [ -n "$dns_srv" ]   && dns_value="${dns_value}SRV: ${dns_srv}"$'\n'
-    [ -z "$dns_value" ] && dns_value="No records found"
-    dns_value="${dns_value%$'\n'}"
-    fields=$(add_field "$fields" "DNS Records" "$dns_value" false)
+    if [ "$SHORT_OUTPUT" = false ]; then
+        local dns_value
+        dns_value=""
+        [ -n "$dns_a" ]     && dns_value="${dns_value}A: ${dns_a}"$'\n'
+        [ -n "$dns_cname" ] && dns_value="${dns_value}CNAME: ${dns_cname}"$'\n'
+        [ -n "$dns_srv" ]   && dns_value="${dns_value}SRV: ${dns_srv}"$'\n'
+        [ -z "$dns_value" ] && dns_value="No records found"
+        dns_value="${dns_value%$'\n'}"
+        fields=$(add_field "$fields" "DNS Records" "$dns_value" false)
 
-    if [ -n "$dns_a" ] || [ -n "$geo_country" ]; then
-        local geo_value
-        geo_value=""
-        [ -n "$dns_a" ]       && geo_value="${geo_value}IP: ${dns_a}"$'\n'
-        [ -n "$geo_country" ] && geo_value="${geo_value}Country: ${geo_country}"$'\n'
-        [ -n "$geo_city" ]    && geo_value="${geo_value}City/Region: ${geo_city}, ${geo_region}"$'\n'
-        [ -n "$geo_isp" ]     && geo_value="${geo_value}ISP: ${geo_isp}"$'\n'
-        geo_value="${geo_value%$'\n'}"
-        fields=$(add_field "$fields" "Server Location" "$geo_value" false)
+        if [ -n "$dns_a" ] || [ -n "$geo_country" ]; then
+            local geo_value
+            geo_value=""
+            [ -n "$dns_a" ]       && geo_value="${geo_value}IP: ${dns_a}"$'\n'
+            [ -n "$geo_country" ] && geo_value="${geo_value}Country: ${geo_country}"$'\n'
+            [ -n "$geo_city" ]    && geo_value="${geo_value}City/Region: ${geo_city}, ${geo_region}"$'\n'
+            [ -n "$geo_isp" ]     && geo_value="${geo_value}ISP: ${geo_isp}"$'\n'
+            geo_value="${geo_value%$'\n'}"
+            fields=$(add_field "$fields" "Server Location" "$geo_value" false)
+        fi
     fi
 
     local payload
@@ -231,62 +262,66 @@ run_query() {
     local ping_stats=""
 
     if ! $JSON_OUTPUT; then
-        hr
-        echo "MINECRAFT SERVER INFORMATION for $SERVER"
-        hr
+        if [ "$SHORT_OUTPUT" = false ]; then
+            hr
+            echo "MINECRAFT SERVER INFORMATION for $SERVER"
+            hr
+        fi
     fi
 
-    if command -v dig &> /dev/null; then
-        if ! $JSON_OUTPUT; then
-            echo ""
-            echo "DNS RECORDS:"
-        fi
-        dns_a=$(dig +short "$SERVER" A | head -1)
-        [ -n "$dns_a" ] && { [ "$JSON_OUTPUT" = false ] && echo "  A record: $dns_a"; }
-
-        dns_cname=$(dig +short "$SERVER" CNAME | head -1)
-        [ -n "$dns_cname" ] && { [ "$JSON_OUTPUT" = false ] && echo "  CNAME: $dns_cname"; }
-
-        local srv_raw
-        srv_raw=$(dig +short "_minecraft._tcp.$SERVER" SRV)
-        if [ -n "$srv_raw" ]; then
-            local srv_port srv_target
-            srv_port=$(echo "$srv_raw" | awk '{print $3}')
-            srv_target=$(echo "$srv_raw" | awk '{print $4}' | sed 's/\.$//')
-            dns_srv="port $srv_port -> $srv_target"
-            if [ "$JSON_OUTPUT" = false ]; then
-                echo "  SRV: port $srv_port target $srv_target"
-            fi
-            if [ "$srv_port" != "25565" ]; then
-                PORT="$srv_port"
-                [ "$JSON_OUTPUT" = false ] && echo "  Using SRV port $PORT"
-            fi
-        else
-            [ "$JSON_OUTPUT" = false ] && echo "  No Minecraft SRV record"
-        fi
-    else
-        [ "$JSON_OUTPUT" = false ] && echo "dig not installed, skipping DNS lookup"
-    fi
-
-    if [ -n "$dns_a" ] && command -v curl &> /dev/null; then
-        if ! $JSON_OUTPUT; then
-            echo ""
-            echo "GEOLOCATION OF SERVER IP ($dns_a):"
-        fi
-        local geo
-        geo=$(curl -s "http://ip-api.com/json/$dns_a?fields=status,country,city,regionName,isp")
-        if echo "$geo" | grep -q '"status":"success"'; then
-            geo_country=$(echo "$geo" | sed -n 's/.*"country":"\([^"]*\)".*/\1/p')
-            geo_city=$(echo "$geo" | sed -n 's/.*"city":"\([^"]*\)".*/\1/p')
-            geo_region=$(echo "$geo" | sed -n 's/.*"regionName":"\([^"]*\)".*/\1/p')
-            geo_isp=$(echo "$geo" | sed -n 's/.*"isp":"\([^"]*\)".*/\1/p')
+    if [ "$SHORT_OUTPUT" = false ]; then
+        if command -v dig &> /dev/null; then
             if ! $JSON_OUTPUT; then
-                echo "  Country: ${geo_country:-unknown}"
-                echo "  City/Region: ${geo_city:-unknown}, ${geo_region:-unknown}"
-                echo "  ISP/Organization: ${geo_isp:-unknown}"
+                echo ""
+                echo "DNS RECORDS:"
+            fi
+            dns_a=$(dig +short "$SERVER" A | head -1)
+            [ -n "$dns_a" ] && { [ "$JSON_OUTPUT" = false ] && echo "  A record: $dns_a"; }
+
+            dns_cname=$(dig +short "$SERVER" CNAME | head -1)
+            [ -n "$dns_cname" ] && { [ "$JSON_OUTPUT" = false ] && echo "  CNAME: $dns_cname"; }
+
+            local srv_raw
+            srv_raw=$(dig +short "_minecraft._tcp.$SERVER" SRV)
+            if [ -n "$srv_raw" ]; then
+                local srv_port srv_target
+                srv_port=$(echo "$srv_raw" | awk '{print $3}')
+                srv_target=$(echo "$srv_raw" | awk '{print $4}' | sed 's/\.$//')
+                dns_srv="port $srv_port -> $srv_target"
+                if [ "$JSON_OUTPUT" = false ]; then
+                    echo "  SRV: port $srv_port target $srv_target"
+                fi
+                if [ "$srv_port" != "25565" ]; then
+                    PORT="$srv_port"
+                    [ "$JSON_OUTPUT" = false ] && echo "  Using SRV port $PORT"
+                fi
+            else
+                [ "$JSON_OUTPUT" = false ] && echo "  No Minecraft SRV record"
             fi
         else
-            [ "$JSON_OUTPUT" = false ] && echo "  Geolocation query failed."
+            [ "$JSON_OUTPUT" = false ] && echo "dig not installed, skipping DNS lookup"
+        fi
+
+        if [ -n "$dns_a" ] && command -v curl &> /dev/null; then
+            if ! $JSON_OUTPUT; then
+                echo ""
+                echo "GEOLOCATION OF SERVER IP ($dns_a):"
+            fi
+            local geo
+            geo=$(curl -s "http://ip-api.com/json/$dns_a?fields=status,country,city,regionName,isp")
+            if echo "$geo" | grep -q '"status":"success"'; then
+                geo_country=$(echo "$geo" | sed -n 's/.*"country":"\([^"]*\)".*/\1/p')
+                geo_city=$(echo "$geo" | sed -n 's/.*"city":"\([^"]*\)".*/\1/p')
+                geo_region=$(echo "$geo" | sed -n 's/.*"regionName":"\([^"]*\)".*/\1/p')
+                geo_isp=$(echo "$geo" | sed -n 's/.*"isp":"\([^"]*\)".*/\1/p')
+                if ! $JSON_OUTPUT; then
+                    echo "  Country: ${geo_country:-unknown}"
+                    echo "  City/Region: ${geo_city:-unknown}, ${geo_region:-unknown}"
+                    echo "  ISP/Organization: ${geo_isp:-unknown}"
+                fi
+            else
+                [ "$JSON_OUTPUT" = false ] && echo "  Geolocation query failed."
+            fi
         fi
     fi
 
@@ -325,7 +360,36 @@ run_query() {
     fi
 
     local status_output
-    status_output=$(python3 -c "
+    if [ "$SHORT_OUTPUT" = true ]; then
+        status_output=$(python3 -c "
+import sys, re
+from mcstatus import JavaServer
+
+def clean_text(text):
+    if not isinstance(text, str):
+        return str(text)
+    text = re.sub(r'§[0-9a-fklmnor]', '', text)
+    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r'[\x00-\x1f\x7f]', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+try:
+    server = JavaServer.lookup('$SERVER:$PORT')
+    status = server.status()
+    print('Status: ONLINE')
+    print('Version:', clean_text(status.version.name))
+    print('MOTD:', clean_text(status.description))
+    print('Players:', f'{status.players.online}/{status.players.max}')
+    print('Latency (ms):', round(status.latency, 1))
+    if hasattr(status, 'favicon') and status.favicon:
+        print('FAVICON:', status.favicon)
+except Exception as e:
+    print('Status: OFFLINE')
+    print('ERROR:', str(e))
+")
+    else
+        status_output=$(python3 -c "
 import sys, re, json
 from mcstatus import JavaServer
 
@@ -353,6 +417,8 @@ try:
     print('MOTD:', clean_text(status.description))
     print('Players:', f'{status.players.online}/{status.players.max}')
     print('Latency (ms):', round(status.latency, 1))
+    if hasattr(status, 'favicon') and status.favicon:
+        print('FAVICON:', status.favicon)
 
     if query:
         print('Software:', clean_text(query.software.version))
@@ -372,13 +438,50 @@ except Exception as e:
     print('Status: OFFLINE')
     print('ERROR:', str(e))
 ")
+    fi
 
     if ! $JSON_OUTPUT; then
         echo "$status_output"
         hr
     fi
 
-    if [ -n "$DISCORD_WEBHOOK" ]; then
+    if [ -n "$FAVICON_PATH" ]; then
+        local favicon_b64
+        favicon_b64=$(echo "$status_output" | grep "^FAVICON:" | sed 's/^FAVICON: //')
+        if [ -n "$favicon_b64" ]; then
+            echo "$favicon_b64" | base64 -d > "$FAVICON_PATH" 2>/dev/null
+            if [ $? -eq 0 ]; then
+                echo "Favicon saved to $FAVICON_PATH" >&2
+            else
+                echo "Failed to decode favicon" >&2
+            fi
+        else
+            echo "No favicon available for this server" >&2
+        fi
+    fi
+
+    local current_status=""
+    if echo "$status_output" | grep -q "^Status: ONLINE"; then
+        current_status="ONLINE"
+    else
+        current_status="OFFLINE"
+    fi
+
+    local should_send=true
+    if [ "$ALERT_ENABLED" = true ] && [ -n "$DISCORD_WEBHOOK" ]; then
+        local status_file="/tmp/mcprobe_status_${SERVER}_${PORT}"
+        local last_status=""
+        if [ -f "$status_file" ]; then
+            last_status=$(cat "$status_file")
+        fi
+        if [ "$current_status" = "$last_status" ]; then
+            should_send=false
+        else
+            echo "$current_status" > "$status_file"
+        fi
+    fi
+
+    if [ -n "$DISCORD_WEBHOOK" ] && [ "$should_send" = true ]; then
         local s_version s_protocol s_motd s_players s_latency s_software s_plugins s_player_list s_error
 
         s_version=$(echo "$status_output"     | grep "^Version:"            | sed 's/^Version: //')
@@ -391,7 +494,7 @@ except Exception as e:
         s_player_list=$(echo "$status_output" | grep "^Online players sample:" | sed 's/^Online players sample: //')
         s_error=$(echo "$status_output"       | grep "^ERROR:"              | sed 's/^ERROR: //')
 
-        if echo "$status_output" | grep -q "^Status: ONLINE"; then
+        if [ "$current_status" = "ONLINE" ]; then
             send_discord_embed "true" \
                 "$s_version" "$s_protocol" "$s_motd" "$s_players" "$s_latency" \
                 "$s_software" "$s_plugins" "$s_player_list" \
@@ -408,62 +511,92 @@ except Exception as e:
     if $JSON_OUTPUT; then
         local status_line=$(echo "$status_output" | grep "^Status:" | sed 's/^Status: //')
         local version_line=$(echo "$status_output" | grep "^Version:" | sed 's/^Version: //')
-        local protocol_line=$(echo "$status_output" | grep "^Protocol:" | sed 's/^Protocol: //')
         local motd_line=$(echo "$status_output" | grep "^MOTD:" | sed 's/^MOTD: //')
         local players_line=$(echo "$status_output" | grep "^Players:" | sed 's/^Players: //')
         local latency_line=$(echo "$status_output" | grep "^Latency (ms):" | sed 's/^Latency (ms): //')
-        local software_line=$(echo "$status_output" | grep "^Software:" | sed 's/^Software: //')
-        local plugins_line=$(echo "$status_output" | grep "^Plugins" | sed 's/^Plugins[^:]*: //')
-        local player_sample_line=$(echo "$status_output" | grep "^Online players sample:" | sed 's/^Online players sample: //')
-        local error_line=$(echo "$status_output" | grep "^ERROR:" | sed 's/^ERROR: //')
+        local favicon_line=$(echo "$status_output" | grep "^FAVICON:" | sed 's/^FAVICON: //')
 
-        jq -n \
-            --arg server "$SERVER" \
-            --arg port "$PORT" \
-            --arg status "$status_line" \
-            --arg version "$version_line" \
-            --arg protocol "$protocol_line" \
-            --arg motd "$motd_line" \
-            --arg players "$players_line" \
-            --arg latency "$latency_line" \
-            --arg software "$software_line" \
-            --arg plugins "$plugins_line" \
-            --arg player_sample "$player_sample_line" \
-            --arg error "$error_line" \
-            --arg dns_a "$dns_a" \
-            --arg dns_cname "$dns_cname" \
-            --arg dns_srv "$dns_srv" \
-            --arg geo_country "$geo_country" \
-            --arg geo_city "$geo_city" \
-            --arg geo_region "$geo_region" \
-            --arg geo_isp "$geo_isp" \
-            --arg ping "$ping_stats" \
-            '{
-                "server": $server,
-                "port": $port,
-                "status": $status,
-                "version": $version,
-                "protocol": $protocol,
-                "motd": $motd,
-                "players": $players,
-                "latency_ms": ($latency | tonumber? // null),
-                "software": $software,
-                "plugins": $plugins,
-                "player_sample": $player_sample,
-                "error": $error,
-                "dns": {
-                    "a": $dns_a,
-                    "cname": $dns_cname,
-                    "srv": $dns_srv
-                },
-                "geolocation": {
-                    "country": $geo_country,
-                    "city": $geo_city,
-                    "region": $geo_region,
-                    "isp": $geo_isp
-                },
-                "ping_stats": $ping
-            }'
+        if [ "$SHORT_OUTPUT" = false ]; then
+            local protocol_line=$(echo "$status_output" | grep "^Protocol:" | sed 's/^Protocol: //')
+            local software_line=$(echo "$status_output" | grep "^Software:" | sed 's/^Software: //')
+            local plugins_line=$(echo "$status_output" | grep "^Plugins" | sed 's/^Plugins[^:]*: //')
+            local player_sample_line=$(echo "$status_output" | grep "^Online players sample:" | sed 's/^Online players sample: //')
+            local error_line=$(echo "$status_output" | grep "^ERROR:" | sed 's/^ERROR: //')
+            jq -n \
+                --arg server "$SERVER" \
+                --arg port "$PORT" \
+                --arg status "$status_line" \
+                --arg version "$version_line" \
+                --arg protocol "$protocol_line" \
+                --arg motd "$motd_line" \
+                --arg players "$players_line" \
+                --arg latency "$latency_line" \
+                --arg software "$software_line" \
+                --arg plugins "$plugins_line" \
+                --arg player_sample "$player_sample_line" \
+                --arg error "$error_line" \
+                --arg dns_a "$dns_a" \
+                --arg dns_cname "$dns_cname" \
+                --arg dns_srv "$dns_srv" \
+                --arg geo_country "$geo_country" \
+                --arg geo_city "$geo_city" \
+                --arg geo_region "$geo_region" \
+                --arg geo_isp "$geo_isp" \
+                --arg ping "$ping_stats" \
+                --arg favicon "$favicon_line" \
+                '{
+                    "server": $server,
+                    "port": $port,
+                    "status": $status,
+                    "version": $version,
+                    "protocol": $protocol,
+                    "motd": $motd,
+                    "players": $players,
+                    "latency_ms": ($latency | tonumber? // null),
+                    "software": $software,
+                    "plugins": $plugins,
+                    "player_sample": $player_sample,
+                    "error": $error,
+                    "favicon_base64": $favicon,
+                    "dns": {
+                        "a": $dns_a,
+                        "cname": $dns_cname,
+                        "srv": $dns_srv
+                    },
+                    "geolocation": {
+                        "country": $geo_country,
+                        "city": $geo_city,
+                        "region": $geo_region,
+                        "isp": $geo_isp
+                    },
+                    "ping_stats": $ping
+                }'
+        else
+            local error_line=$(echo "$status_output" | grep "^ERROR:" | sed 's/^ERROR: //')
+            jq -n \
+                --arg server "$SERVER" \
+                --arg port "$PORT" \
+                --arg status "$status_line" \
+                --arg version "$version_line" \
+                --arg motd "$motd_line" \
+                --arg players "$players_line" \
+                --arg latency "$latency_line" \
+                --arg error "$error_line" \
+                --arg ping "$ping_stats" \
+                --arg favicon "$favicon_line" \
+                '{
+                    "server": $server,
+                    "port": $port,
+                    "status": $status,
+                    "version": $version,
+                    "motd": $motd,
+                    "players": $players,
+                    "latency_ms": ($latency | tonumber? // null),
+                    "error": $error,
+                    "favicon_base64": $favicon,
+                    "ping_stats": $ping
+                }'
+        fi
     fi
 }
 
