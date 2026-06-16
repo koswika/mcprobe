@@ -8,6 +8,9 @@ WATCH_SECONDS=0
 SERVER=""
 PORT="25565"
 DISCORD_WEBHOOK=""
+DISCORD_NAME=""
+DISCORD_AVATAR=""
+DISCORD_COLOR=""
 JSON_OUTPUT=false
 PING_ENABLED=false
 ALERT_ENABLED=false
@@ -27,6 +30,9 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --watch N               Refresh every N seconds"
             echo "  --discord WEBHOOK_URL   Send Discord embeds to the given webhook"
+            echo "  --discord-name NAME     Custom name for Discord webhook"
+            echo "  --discord-avatar URL    Custom avatar URL for Discord webhook"
+            echo "  --discord-color HEX     Custom embed color (e.g., 0x00FF00) for online status"
             echo "  --json                  Output raw JSON instead of human-readable text"
             echo "  --ping                  Ping the resolved IP address (3 packets) and show stats"
             echo "  --alert                 With --watch and --discord, send only on status change"
@@ -36,13 +42,13 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-dns                Skip DNS and SRV lookups"
             echo "  --min-players N         Alert when online players drop below N"
             echo "  --max-players N         Alert when online players exceed N"
-            echo "  --log FILE              Append minimal log line to FILE (timestamp, server, status, players, latency)"
+            echo "  --log FILE              Append minimal log line to FILE"
             echo "  --version               Show version information and exit"
             echo "  --install               Install this script system-wide (to /usr/local/bin)"
             echo "  --help, -h              Show this help message"
             echo ""
             echo "Example:"
-            echo "  $0 play.hypixel.net --watch 10 --discord https://discord.com/api/webhooks/... --min-players 50 --log ~/mcprobe.log"
+            echo "  $0 play.hypixel.net --watch 10 --discord WEBHOOK --discord-name 'MC Bot' --discord-color 0x00FF00"
             exit 0
             ;;
         --version)
@@ -55,6 +61,18 @@ while [[ $# -gt 0 ]]; do
             ;;
         --discord)
             DISCORD_WEBHOOK="$2"
+            shift 2
+            ;;
+        --discord-name)
+            DISCORD_NAME="$2"
+            shift 2
+            ;;
+        --discord-avatar)
+            DISCORD_AVATAR="$2"
+            shift 2
+            ;;
+        --discord-color)
+            DISCORD_COLOR="$2"
             shift 2
             ;;
         --json)
@@ -211,7 +229,12 @@ send_discord_embed() {
 
     local color title description
     if [ "$online" = "true" ]; then
-        color=5763719
+        # Use custom color if provided, else default green
+        if [ -n "$DISCORD_COLOR" ]; then
+            color=$((DISCORD_COLOR))
+        else
+            color=5763719
+        fi
         title="$SERVER - ONLINE"
         if [ -n "$warning_msg" ]; then
             title="$title [WARNING]"
@@ -282,6 +305,8 @@ send_discord_embed() {
         --argjson fields "$fields" \
         --arg timestamp "$timestamp" \
         --arg footer "mcstatus • $SERVER:$PORT" \
+        --arg username "$DISCORD_NAME" \
+        --arg avatar_url "$DISCORD_AVATAR" \
         '{
             "embeds": [{
                 "title": $title,
@@ -291,7 +316,9 @@ send_discord_embed() {
                 "footer": {"text": $footer},
                 "timestamp": $timestamp
             }]
-        }')
+        }
+        | if $username != "" then .username = $username else . end
+        | if $avatar_url != "" then .avatar_url = $avatar_url else . end')
 
     curl -s -X POST -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK" > /dev/null
 }
@@ -509,7 +536,6 @@ except Exception as e:
         current_status="OFFLINE"
     fi
 
-    # Extract online player count and latency
     local online_players=""
     local latency_value=""
     local version_value=""
@@ -543,7 +569,6 @@ except Exception as e:
         fi
     fi
 
-    # --- LOGGING ---
     if [ -n "$LOG_FILE" ]; then
         local timestamp
         timestamp=$(date '+%Y-%m-%d %H:%M:%S')
