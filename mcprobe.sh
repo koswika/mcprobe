@@ -21,6 +21,8 @@ NO_DNS=false
 MIN_PLAYERS=""
 MAX_PLAYERS=""
 LOG_FILE=""
+TIMEOUT=""
+RETRY=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -32,7 +34,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --discord WEBHOOK_URL   Send Discord embeds to the given webhook"
             echo "  --discord-name NAME     Custom name for Discord webhook"
             echo "  --discord-avatar URL    Custom avatar URL for Discord webhook"
-            echo "  --discord-color HEX     Custom embed color (e.g., 0x00FF00) for online status"
+            echo "  --discord-color HEX     Custom embed color (e.g., 0x00FF00)"
             echo "  --json                  Output raw JSON instead of human-readable text"
             echo "  --ping                  Ping the resolved IP address (3 packets) and show stats"
             echo "  --alert                 With --watch and --discord, send only on status change"
@@ -43,12 +45,14 @@ while [[ $# -gt 0 ]]; do
             echo "  --min-players N         Alert when online players drop below N"
             echo "  --max-players N         Alert when online players exceed N"
             echo "  --log FILE              Append minimal log line to FILE"
+            echo "  --timeout N             Set timeout in seconds for mcstatus query (default: 10)"
+            echo "  --retry N               Retry N times if connection fails (default: 1)"
             echo "  --version               Show version information and exit"
             echo "  --install               Install this script system-wide (to /usr/local/bin)"
             echo "  --help, -h              Show this help message"
             echo ""
             echo "Example:"
-            echo "  $0 play.hypixel.net --watch 10 --discord WEBHOOK --discord-name 'MC Bot' --discord-color 0x00FF00"
+            echo "  $0 play.hypixel.net --watch 10 --discord WEBHOOK --timeout 5 --retry 3"
             exit 0
             ;;
         --version)
@@ -118,6 +122,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --log)
             LOG_FILE="$2"
+            shift 2
+            ;;
+        --timeout)
+            TIMEOUT="$2"
+            shift 2
+            ;;
+        --retry)
+            RETRY="$2"
             shift 2
             ;;
         --install)
@@ -229,7 +241,6 @@ send_discord_embed() {
 
     local color title description
     if [ "$online" = "true" ]; then
-        # Use custom color if provided, else default green
         if [ -n "$DISCORD_COLOR" ]; then
             color=$((DISCORD_COLOR))
         else
@@ -428,10 +439,13 @@ run_query() {
         echo "-----------------------------"
     fi
 
+    local timeout_arg="${TIMEOUT:-10}"
+    local retry_arg="${RETRY:-1}"
+
     local status_output
     if [ "$SHORT_OUTPUT" = true ]; then
         status_output=$(python3 -c "
-import sys, re
+import sys, re, time
 from mcstatus import JavaServer
 
 def clean_text(text):
@@ -443,9 +457,9 @@ def clean_text(text):
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
-try:
+def query_server():
     server = JavaServer.lookup('$SERVER:$PORT')
-    status = server.status()
+    status = server.status(timeout=$timeout_arg)
     print('Status: ONLINE')
     print('Version:', clean_text(status.version.name))
     print('MOTD:', clean_text(status.description))
@@ -453,13 +467,22 @@ try:
     print('Latency (ms):', round(status.latency, 1))
     if hasattr(status, 'favicon') and status.favicon:
         print('FAVICON:', status.favicon)
-except Exception as e:
-    print('Status: OFFLINE')
-    print('ERROR:', str(e))
+
+retry_count = $retry_arg
+for attempt in range(retry_count):
+    try:
+        query_server()
+        break
+    except Exception as e:
+        if attempt == retry_count - 1:
+            print('Status: OFFLINE')
+            print('ERROR:', str(e))
+            sys.exit(1)
+        time.sleep(1)
 ")
     else
         status_output=$(python3 -c "
-import sys, re, json
+import sys, re, json, time
 from mcstatus import JavaServer
 
 def clean_text(text):
@@ -471,12 +494,12 @@ def clean_text(text):
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
-try:
+def query_server():
     server = JavaServer.lookup('$SERVER:$PORT')
-    status = server.status()
+    status = server.status(timeout=$timeout_arg)
     query = None
     try:
-        query = server.query()
+        query = server.query(timeout=$timeout_arg)
     except:
         pass
 
@@ -503,9 +526,18 @@ try:
             print('Online players sample:', ', '.join(player_names))
     else:
         print('Note: Query protocol disabled (no software/player list)')
-except Exception as e:
-    print('Status: OFFLINE')
-    print('ERROR:', str(e))
+
+retry_count = $retry_arg
+for attempt in range(retry_count):
+    try:
+        query_server()
+        break
+    except Exception as e:
+        if attempt == retry_count - 1:
+            print('Status: OFFLINE')
+            print('ERROR:', str(e))
+            sys.exit(1)
+        time.sleep(1)
 ")
     fi
 
