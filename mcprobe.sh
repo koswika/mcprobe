@@ -13,6 +13,8 @@ PING_ENABLED=false
 ALERT_ENABLED=false
 SHORT_OUTPUT=false
 FAVICON_PATH=""
+NO_GEO=false
+NO_DNS=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -27,12 +29,14 @@ while [[ $# -gt 0 ]]; do
             echo "  --alert                 With --watch and --discord, send only on status change"
             echo "  --short                 Minimal output: only server, players, latency, MOTD"
             echo "  --favicon [FILE]        Save server favicon as PNG (default: server_icon.png)"
+            echo "  --no-geo                Skip geolocation lookup"
+            echo "  --no-dns                Skip DNS and SRV lookups"
             echo "  --version               Show version information and exit"
             echo "  --install               Install this script system-wide (to /usr/local/bin)"
             echo "  --help, -h              Show this help message"
             echo ""
             echo "Example:"
-            echo "  $0 play.hypixel.net --watch 10 --discord https://discord.com/api/webhooks/... --ping --favicon icon.png"
+            echo "  $0 play.hypixel.net --watch 10 --discord https://discord.com/api/webhooks/... --ping --favicon icon.png --no-geo"
             exit 0
             ;;
         --version)
@@ -71,6 +75,14 @@ while [[ $# -gt 0 ]]; do
                 FAVICON_PATH="server_icon.png"
                 shift
             fi
+            ;;
+        --no-geo)
+            NO_GEO=true
+            shift
+            ;;
+        --no-dns)
+            NO_DNS=true
+            shift
             ;;
         --install)
             echo "Installing mcprobe to /usr/local/bin..."
@@ -212,7 +224,7 @@ send_discord_embed() {
         fi
     fi
 
-    if [ "$SHORT_OUTPUT" = false ]; then
+    if [ "$SHORT_OUTPUT" = false ] && [ "$NO_DNS" = false ]; then
         local dns_value
         dns_value=""
         [ -n "$dns_a" ]     && dns_value="${dns_value}A: ${dns_a}"$'\n'
@@ -221,7 +233,9 @@ send_discord_embed() {
         [ -z "$dns_value" ] && dns_value="No records found"
         dns_value="${dns_value%$'\n'}"
         fields=$(add_field "$fields" "DNS Records" "$dns_value" false)
+    fi
 
+    if [ "$SHORT_OUTPUT" = false ] && [ "$NO_GEO" = false ]; then
         if [ -n "$dns_a" ] || [ -n "$geo_country" ]; then
             local geo_value
             geo_value=""
@@ -269,7 +283,7 @@ run_query() {
         fi
     fi
 
-    if [ "$SHORT_OUTPUT" = false ]; then
+    if [ "$SHORT_OUTPUT" = false ] && [ "$NO_DNS" = false ]; then
         if command -v dig &> /dev/null; then
             if ! $JSON_OUTPUT; then
                 echo ""
@@ -301,7 +315,9 @@ run_query() {
         else
             [ "$JSON_OUTPUT" = false ] && echo "dig not installed, skipping DNS lookup"
         fi
+    fi
 
+    if [ "$SHORT_OUTPUT" = false ] && [ "$NO_GEO" = false ]; then
         if [ -n "$dns_a" ] && command -v curl &> /dev/null; then
             if ! $JSON_OUTPUT; then
                 echo ""
