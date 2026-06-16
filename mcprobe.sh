@@ -15,6 +15,8 @@ SHORT_OUTPUT=false
 FAVICON_PATH=""
 NO_GEO=false
 NO_DNS=false
+MIN_PLAYERS=""
+MAX_PLAYERS=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -31,12 +33,14 @@ while [[ $# -gt 0 ]]; do
             echo "  --favicon [FILE]        Save server favicon as PNG (default: server_icon.png)"
             echo "  --no-geo                Skip geolocation lookup"
             echo "  --no-dns                Skip DNS and SRV lookups"
+            echo "  --min-players N         Alert when online players drop below N"
+            echo "  --max-players N         Alert when online players exceed N"
             echo "  --version               Show version information and exit"
             echo "  --install               Install this script system-wide (to /usr/local/bin)"
             echo "  --help, -h              Show this help message"
             echo ""
             echo "Example:"
-            echo "  $0 play.hypixel.net --watch 10 --discord https://discord.com/api/webhooks/... --ping --favicon icon.png --no-geo"
+            echo "  $0 play.hypixel.net --watch 10 --discord https://discord.com/api/webhooks/... --min-players 50 --max-players 500"
             exit 0
             ;;
         --version)
@@ -83,6 +87,14 @@ while [[ $# -gt 0 ]]; do
         --no-dns)
             NO_DNS=true
             shift
+            ;;
+        --min-players)
+            MIN_PLAYERS="$2"
+            shift 2
+            ;;
+        --max-players)
+            MAX_PLAYERS="$2"
+            shift 2
             ;;
         --install)
             echo "Installing mcprobe to /usr/local/bin..."
@@ -186,6 +198,7 @@ send_discord_embed() {
     local geo_isp="${16}"
     local error_msg="${17}"
     local ping_stats="${18}"
+    local warning_msg="${19}"
 
     local timestamp
     timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -194,6 +207,10 @@ send_discord_embed() {
     if [ "$online" = "true" ]; then
         color=5763719
         title="$SERVER - ONLINE"
+        if [ -n "$warning_msg" ]; then
+            title="$title [WARNING]"
+            color=16776960
+        fi
         description="$(printf 'MOTD\n```\n%s\n```' "$motd")"
     else
         color=15548997
@@ -208,6 +225,9 @@ send_discord_embed() {
         fields=$(add_field "$fields" "Latency (Minecraft)" "${latency} ms" true)
         if [ -n "$ping_stats" ]; then
             fields=$(add_field "$fields" "Ping (ICMP)" "$ping_stats" true)
+        fi
+        if [ -n "$warning_msg" ]; then
+            fields=$(add_field "$fields" "⚠️ Alert" "$warning_msg" false)
         fi
         if [ "$SHORT_OUTPUT" = false ]; then
             fields=$(add_field "$fields" "Version" "$version" true)
@@ -483,6 +503,28 @@ except Exception as e:
         current_status="OFFLINE"
     fi
 
+    # Extract online player count
+    local online_players=""
+    if [ "$current_status" = "ONLINE" ]; then
+        local players_line
+        players_line=$(echo "$status_output" | grep "^Players:" | head -1)
+        if [ -n "$players_line" ]; then
+            online_players=$(echo "$players_line" | sed -E 's/.* ([0-9]+)\/[0-9]+$/\1/')
+        fi
+    fi
+
+    local warning_msg=""
+    if [ "$current_status" = "ONLINE" ] && [ -n "$online_players" ]; then
+        if [ -n "$MIN_PLAYERS" ] && [ "$online_players" -lt "$MIN_PLAYERS" ]; then
+            warning_msg="Player count ($online_players) is below minimum ($MIN_PLAYERS)"
+        elif [ -n "$MAX_PLAYERS" ] && [ "$online_players" -gt "$MAX_PLAYERS" ]; then
+            warning_msg="Player count ($online_players) exceeds maximum ($MAX_PLAYERS)"
+        fi
+        if [ -n "$warning_msg" ] && ! $JSON_OUTPUT; then
+            echo "WARNING: $warning_msg" >&2
+        fi
+    fi
+
     local should_send=true
     if [ "$ALERT_ENABLED" = true ] && [ -n "$DISCORD_WEBHOOK" ]; then
         local status_file="/tmp/mcprobe_status_${SERVER}_${PORT}"
@@ -515,12 +557,12 @@ except Exception as e:
                 "$s_version" "$s_protocol" "$s_motd" "$s_players" "$s_latency" \
                 "$s_software" "$s_plugins" "$s_player_list" \
                 "$dns_a" "$dns_cname" "$dns_srv" \
-                "$geo_country" "$geo_city" "$geo_region" "$geo_isp" "" "$ping_stats"
+                "$geo_country" "$geo_city" "$geo_region" "$geo_isp" "" "$ping_stats" "$warning_msg"
         else
             send_discord_embed "false" \
                 "" "" "" "" "" "" "" "" \
                 "$dns_a" "$dns_cname" "$dns_srv" \
-                "$geo_country" "$geo_city" "$geo_region" "$geo_isp" "$s_error" "$ping_stats"
+                "$geo_country" "$geo_city" "$geo_region" "$geo_isp" "$s_error" "$ping_stats" ""
         fi
     fi
 
@@ -560,6 +602,7 @@ except Exception as e:
                 --arg geo_isp "$geo_isp" \
                 --arg ping "$ping_stats" \
                 --arg favicon "$favicon_line" \
+                --arg alert "$warning_msg" \
                 '{
                     "server": $server,
                     "port": $port,
@@ -574,6 +617,7 @@ except Exception as e:
                     "player_sample": $player_sample,
                     "error": $error,
                     "favicon_base64": $favicon,
+                    "alert": $alert,
                     "dns": {
                         "a": $dns_a,
                         "cname": $dns_cname,
@@ -600,6 +644,7 @@ except Exception as e:
                 --arg error "$error_line" \
                 --arg ping "$ping_stats" \
                 --arg favicon "$favicon_line" \
+                --arg alert "$warning_msg" \
                 '{
                     "server": $server,
                     "port": $port,
@@ -610,6 +655,7 @@ except Exception as e:
                     "latency_ms": ($latency | tonumber? // null),
                     "error": $error,
                     "favicon_base64": $favicon,
+                    "alert": $alert,
                     "ping_stats": $ping
                 }'
         fi
