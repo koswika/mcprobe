@@ -21,6 +21,10 @@ NO_DNS=false
 MIN_PLAYERS=""
 MAX_PLAYERS=""
 LOG_FILE=""
+TIMEOUT=""
+RETRY=""
+OUTPUT_FILE=""
+CSV_FILE=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -32,7 +36,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --discord WEBHOOK_URL   Send Discord embeds to the given webhook"
             echo "  --discord-name NAME     Custom name for Discord webhook"
             echo "  --discord-avatar URL    Custom avatar URL for Discord webhook"
-            echo "  --discord-color HEX     Custom embed color (e.g., 0x00FF00) for online status"
+            echo "  --discord-color HEX     Custom embed color (e.g., 0x00FF00)"
             echo "  --json                  Output raw JSON instead of human-readable text"
             echo "  --ping                  Ping the resolved IP address (3 packets) and show stats"
             echo "  --alert                 With --watch and --discord, send only on status change"
@@ -43,12 +47,16 @@ while [[ $# -gt 0 ]]; do
             echo "  --min-players N         Alert when online players drop below N"
             echo "  --max-players N         Alert when online players exceed N"
             echo "  --log FILE              Append minimal log line to FILE"
+            echo "  --csv FILE              Append CSV data to FILE (timestamp, server, status, players, latency, version)"
+            echo "  --timeout N             Set timeout in seconds for mcstatus query (default: 10)"
+            echo "  --retry N               Retry N times if connection fails (default: 1)"
+            echo "  --output FILE           Save output to FILE instead of stdout"
             echo "  --version               Show version information and exit"
             echo "  --install               Install this script system-wide (to /usr/local/bin)"
             echo "  --help, -h              Show this help message"
             echo ""
             echo "Example:"
-            echo "  $0 play.hypixel.net --watch 10 --discord WEBHOOK --discord-name 'MC Bot' --discord-color 0x00FF00"
+            echo "  $0 play.hypixel.net --watch 10 --discord WEBHOOK --csv data.csv"
             exit 0
             ;;
         --version)
@@ -118,6 +126,22 @@ while [[ $# -gt 0 ]]; do
             ;;
         --log)
             LOG_FILE="$2"
+            shift 2
+            ;;
+        --csv)
+            CSV_FILE="$2"
+            shift 2
+            ;;
+        --timeout)
+            TIMEOUT="$2"
+            shift 2
+            ;;
+        --retry)
+            RETRY="$2"
+            shift 2
+            ;;
+        --output)
+            OUTPUT_FILE="$2"
             shift 2
             ;;
         --install)
@@ -229,7 +253,6 @@ send_discord_embed() {
 
     local color title description
     if [ "$online" = "true" ]; then
-        # Use custom color if provided, else default green
         if [ -n "$DISCORD_COLOR" ]; then
             color=$((DISCORD_COLOR))
         else
@@ -428,10 +451,13 @@ run_query() {
         echo "-----------------------------"
     fi
 
+    local timeout_arg="${TIMEOUT:-10}"
+    local retry_arg="${RETRY:-1}"
+
     local status_output
     if [ "$SHORT_OUTPUT" = true ]; then
         status_output=$(python3 -c "
-import sys, re
+import sys, re, time
 from mcstatus import JavaServer
 
 def clean_text(text):
@@ -443,9 +469,9 @@ def clean_text(text):
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
-try:
+def query_server():
     server = JavaServer.lookup('$SERVER:$PORT')
-    status = server.status()
+    status = server.status(timeout=$timeout_arg)
     print('Status: ONLINE')
     print('Version:', clean_text(status.version.name))
     print('MOTD:', clean_text(status.description))
@@ -453,13 +479,22 @@ try:
     print('Latency (ms):', round(status.latency, 1))
     if hasattr(status, 'favicon') and status.favicon:
         print('FAVICON:', status.favicon)
-except Exception as e:
-    print('Status: OFFLINE')
-    print('ERROR:', str(e))
+
+retry_count = $retry_arg
+for attempt in range(retry_count):
+    try:
+        query_server()
+        break
+    except Exception as e:
+        if attempt == retry_count - 1:
+            print('Status: OFFLINE')
+            print('ERROR:', str(e))
+            sys.exit(1)
+        time.sleep(1)
 ")
     else
         status_output=$(python3 -c "
-import sys, re, json
+import sys, re, json, time
 from mcstatus import JavaServer
 
 def clean_text(text):
@@ -471,12 +506,12 @@ def clean_text(text):
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
-try:
+def query_server():
     server = JavaServer.lookup('$SERVER:$PORT')
-    status = server.status()
+    status = server.status(timeout=$timeout_arg)
     query = None
     try:
-        query = server.query()
+        query = server.query(timeout=$timeout_arg)
     except:
         pass
 
@@ -503,9 +538,18 @@ try:
             print('Online players sample:', ', '.join(player_names))
     else:
         print('Note: Query protocol disabled (no software/player list)')
-except Exception as e:
-    print('Status: OFFLINE')
-    print('ERROR:', str(e))
+
+retry_count = $retry_arg
+for attempt in range(retry_count):
+    try:
+        query_server()
+        break
+    except Exception as e:
+        if attempt == retry_count - 1:
+            print('Status: OFFLINE')
+            print('ERROR:', str(e))
+            sys.exit(1)
+        time.sleep(1)
 ")
     fi
 
@@ -537,13 +581,15 @@ except Exception as e:
     fi
 
     local online_players=""
+    local max_players=""
     local latency_value=""
     local version_value=""
     if [ "$current_status" = "ONLINE" ]; then
         local players_line
         players_line=$(echo "$status_output" | grep "^Players:" | head -1)
         if [ -n "$players_line" ]; then
-            online_players=$(echo "$players_line" | sed -E 's/.* ([0-9]+)\/[0-9]+$/\1/')
+            online_players=$(echo "$players_line" | sed -E 's/.* ([0-9]+)\/([0-9]+)$/\1/')
+            max_players=$(echo "$players_line" | sed -E 's/.* ([0-9]+)\/([0-9]+)$/\2/')
         fi
         local latency_line
         latency_line=$(echo "$status_output" | grep "^Latency (ms):" | head -1)
@@ -584,6 +630,16 @@ except Exception as e:
             log_line="$log_line | error: $error_msg"
         fi
         echo "$log_line" >> "$LOG_FILE" 2>/dev/null || echo "Warning: Could not write to log file $LOG_FILE" >&2
+    fi
+
+    if [ -n "$CSV_FILE" ]; then
+        local csv_timestamp
+        csv_timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+        if [ ! -f "$CSV_FILE" ]; then
+            echo "timestamp,server,port,status,players,max_players,latency_ms,version,alert" > "$CSV_FILE"
+        fi
+        local csv_alert="${warning_msg:-}"
+        echo "$csv_timestamp,$SERVER,$PORT,$current_status,${online_players:-},${max_players:-},${latency_value:-},${version_value:-},\"$csv_alert\"" >> "$CSV_FILE" 2>/dev/null || echo "Warning: Could not write to CSV file $CSV_FILE" >&2
     fi
 
     local should_send=true
@@ -729,6 +785,10 @@ cleanup() {
 }
 
 trap cleanup SIGINT SIGTERM
+
+if [ -n "$OUTPUT_FILE" ]; then
+    exec > "$OUTPUT_FILE"
+fi
 
 if [ "$JSON_OUTPUT" = true ] && [ "$WATCH_SECONDS" -gt 0 ]; then
     while true; do
