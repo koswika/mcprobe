@@ -25,6 +25,7 @@ TIMEOUT=""
 RETRY=""
 OUTPUT_FILE=""
 CSV_FILE=""
+NO_CLEAR=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -44,10 +45,11 @@ while [[ $# -gt 0 ]]; do
             echo "  --favicon [FILE]        Save server favicon as PNG (default: server_icon.png)"
             echo "  --no-geo                Skip geolocation lookup"
             echo "  --no-dns                Skip DNS and SRV lookups"
+            echo "  --no-clear              In watch mode, do not clear screen (scroll output)"
             echo "  --min-players N         Alert when online players drop below N"
             echo "  --max-players N         Alert when online players exceed N"
             echo "  --log FILE              Append minimal log line to FILE"
-            echo "  --csv FILE              Append CSV data to FILE (timestamp, server, status, players, latency, version)"
+            echo "  --csv FILE              Append CSV data to FILE"
             echo "  --timeout N             Set timeout in seconds for mcstatus query (default: 10)"
             echo "  --retry N               Retry N times if connection fails (default: 1)"
             echo "  --output FILE           Save output to FILE instead of stdout"
@@ -56,7 +58,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --help, -h              Show this help message"
             echo ""
             echo "Example:"
-            echo "  $0 play.hypixel.net --watch 10 --discord WEBHOOK --csv data.csv"
+            echo "  $0 play.hypixel.net --watch 10 --no-clear"
             exit 0
             ;;
         --version)
@@ -114,6 +116,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-dns)
             NO_DNS=true
+            shift
+            ;;
+        --no-clear)
+            NO_CLEAR=true
             shift
             ;;
         --min-players)
@@ -797,7 +803,9 @@ if [ "$JSON_OUTPUT" = true ] && [ "$WATCH_SECONDS" -gt 0 ]; then
     done
 elif [ "$WATCH_SECONDS" -gt 0 ]; then
     while true; do
-        clear
+        if [ "$NO_CLEAR" = false ]; then
+            clear
+        fi
         run_query
         sleep "$WATCH_SECONDS"
     done
