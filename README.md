@@ -1,0 +1,1 @@
+# Query Minecraft servers from the command line. Shows DNS records, version, player count, MOTD, latency, software, plugins, and online players. 
