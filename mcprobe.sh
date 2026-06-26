@@ -1,6 +1,5 @@
 #!/bin/bash
 
-
 VERSION="1.2.0"
 
 do_install() {
@@ -545,8 +544,8 @@ def clean_text(text):
     return text.strip()
 
 def query_server():
-    server = JavaServer.lookup('$SERVER:$PORT')
-    status = server.status(timeout=$timeout_arg)
+    server = JavaServer.lookup('$SERVER:$PORT', timeout=$timeout_arg)
+    status = server.status()
     print('Status: ONLINE')
     print('Version:', clean_text(status.version.name))
     print('MOTD:', clean_text(status.description))
@@ -582,11 +581,11 @@ def clean_text(text):
     return text.strip()
 
 def query_server():
-    server = JavaServer.lookup('$SERVER:$PORT')
-    status = server.status(timeout=$timeout_arg)
+    server = JavaServer.lookup('$SERVER:$PORT', timeout=$timeout_arg)
+    status = server.status()
     query = None
     try:
-        query = server.query(timeout=$timeout_arg)
+        query = server.query()
     except:
         pass
 
