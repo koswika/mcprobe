@@ -1,7 +1,49 @@
 #!/bin/bash
 
 
-VERSION="1.3.0"
+VERSION="1.2.0"
+
+do_install() {
+    local dest="/usr/local/bin/mcprobe"
+    echo ""
+    echo "Installing mcprobe to $dest ..."
+    if command -v apt-get &>/dev/null; then
+        sudo apt-get install -y python3 dnsutils curl jq 2>/dev/null | grep -E "^(Get|Setting)" || true
+    elif command -v dnf &>/dev/null; then
+        sudo dnf install -y python3 bind-utils curl jq 2>/dev/null | grep -E "^(Install|Installed)" || true
+    elif command -v zypper &>/dev/null; then
+        sudo zypper install -y python3 bind-utils curl jq 2>/dev/null || true
+    elif command -v apk &>/dev/null; then
+        sudo apk add python3 bind-tools curl jq 2>/dev/null || true
+    elif command -v brew &>/dev/null; then
+        brew install python3 bind curl jq 2>/dev/null || true
+    else
+        sudo pacman -S --noconfirm python3 bind-tools curl jq 2>/dev/null || true
+    fi
+    curl -fsSL "https://raw.githubusercontent.com/koswika/mcprobe/main/mcprobe.sh" -o /tmp/mcprobe_dl
+    sudo mv /tmp/mcprobe_dl "$dest"
+    sudo chmod +x "$dest"
+    echo "Done! Run: mcprobe <server>"
+    exit 0
+}
+
+if [ -z "$MCPROBE_SKIP_INSTALL_PROMPT" ]; then
+    _self=$(ps -o comm= -p $$ 2>/dev/null || basename "$0")
+    if [[ "$_self" == "bash" || "$_self" == "sh" || "$0" == "-" || "$0" == "/dev/stdin" || ! -f "$0" ]]; then
+        echo "╔══════════════════════════════════════╗"
+        echo "║           mcprobe v1.2.0             ║"
+        echo "║  Minecraft server CLI probe tool     ║"
+        echo "╚══════════════════════════════════════╝"
+        echo ""
+        printf "Install mcprobe system-wide to /usr/local/bin? [Y/n] "
+        read -r answer </dev/tty
+        case "$answer" in
+            [nN]*) echo "Aborted. To run manually: bash mcprobe.sh <server>"; exit 0 ;;
+            *) do_install ;;
+        esac
+    fi
+fi
+
 
 WATCH_SECONDS=0
 SERVER=""
@@ -377,7 +419,7 @@ send_discord_embed() {
 }
 
 run_query() {
-    PORT="$ORIGINAL_PORT" 
+    PORT="$ORIGINAL_PORT"  # reset PORT each run so SRV override from prior iteration does not persist
     local dns_a="" dns_cname="" dns_srv=""
     local geo_country="" geo_city="" geo_region="" geo_isp=""
     local ping_stats=""
