@@ -1,12 +1,12 @@
 #!/bin/bash
 
-set -e
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 
 WATCH_SECONDS=0
 SERVER=""
 PORT="25565"
+ORIGINAL_PORT="25565"
 DISCORD_WEBHOOK=""
 DISCORD_NAME=""
 DISCORD_AVATAR=""
@@ -152,7 +152,15 @@ while [[ $# -gt 0 ]]; do
             ;;
         --install)
             echo "Installing mcprobe to /usr/local/bin..."
-            sudo pacman -S --noconfirm python3 bind-tools curl jq || true
+            if command -v apt-get &>/dev/null; then
+                sudo apt-get install -y python3 dnsutils curl jq || true
+            elif command -v dnf &>/dev/null; then
+                sudo dnf install -y python3 bind-utils curl jq || true
+            elif command -v brew &>/dev/null; then
+                brew install python3 bind curl jq || true
+            else
+                sudo pacman -S --noconfirm python3 bind-tools curl jq || true
+            fi
             SCRIPT_PATH="$(realpath "$0")"
             sudo cp "$SCRIPT_PATH" /usr/local/bin/mcprobe
             sudo chmod +x /usr/local/bin/mcprobe
@@ -164,6 +172,7 @@ while [[ $# -gt 0 ]]; do
                 SERVER="$1"
             elif [ "$PORT" == "25565" ]; then
                 PORT="$1"
+                ORIGINAL_PORT="$1"
             fi
             shift
             ;;
@@ -178,27 +187,42 @@ fi
 
 if ! command -v python3 &> /dev/null; then
     echo "python3 not found. Installing..."
-    sudo pacman -S --noconfirm python3
+    if command -v apt-get &>/dev/null; then sudo apt-get install -y python3
+    elif command -v dnf &>/dev/null; then sudo dnf install -y python3
+    elif command -v brew &>/dev/null; then brew install python3
+    else sudo pacman -S --noconfirm python3; fi
 fi
 
 if ! command -v dig &> /dev/null; then
     echo "dig not found. Installing bind-tools..."
-    sudo pacman -S --noconfirm bind-tools
+    if command -v apt-get &>/dev/null; then sudo apt-get install -y dnsutils
+    elif command -v dnf &>/dev/null; then sudo dnf install -y bind-utils
+    elif command -v brew &>/dev/null; then brew install bind
+    else sudo pacman -S --noconfirm bind-tools; fi
 fi
 
 if ! command -v curl &> /dev/null; then
     echo "curl not found. Installing..."
-    sudo pacman -S --noconfirm curl
+    if command -v apt-get &>/dev/null; then sudo apt-get install -y curl
+    elif command -v dnf &>/dev/null; then sudo dnf install -y curl
+    elif command -v brew &>/dev/null; then brew install curl
+    else sudo pacman -S --noconfirm curl; fi
 fi
 
 if ! command -v jq &> /dev/null; then
     echo "jq not found. Installing..."
-    sudo pacman -S --noconfirm jq
+    if command -v apt-get &>/dev/null; then sudo apt-get install -y jq
+    elif command -v dnf &>/dev/null; then sudo dnf install -y jq
+    elif command -v brew &>/dev/null; then brew install jq
+    else sudo pacman -S --noconfirm jq; fi
 fi
 
 if $PING_ENABLED && ! command -v ping &> /dev/null; then
     echo "ping not found. Installing iputils..."
-    sudo pacman -S --noconfirm iputils
+    if command -v apt-get &>/dev/null; then sudo apt-get install -y iputils-ping
+    elif command -v dnf &>/dev/null; then sudo dnf install -y iputils
+    elif command -v brew &>/dev/null; then brew install inetutils
+    else sudo pacman -S --noconfirm iputils; fi
 fi
 
 VENV_DIR="$HOME/.local/share/mcprobe_venv"
@@ -353,6 +377,7 @@ send_discord_embed() {
 }
 
 run_query() {
+    PORT="$ORIGINAL_PORT" 
     local dns_a="" dns_cname="" dns_srv=""
     local geo_country="" geo_city="" geo_region="" geo_isp=""
     local ping_stats=""
@@ -430,16 +455,18 @@ run_query() {
         fi
         local ping_output
         ping_output=$(ping -c 3 -W 1 "$dns_a" 2>/dev/null)
-        local packet_loss=$(echo "$ping_output" | grep -oP '\d+(?=% packet loss)' | head -1)
+        local packet_loss
+        packet_loss=$(echo "$ping_output" | grep -oP '\d+(?=% packet loss)' | head -1)
         if [ -n "$packet_loss" ] && [ "$packet_loss" -eq 100 ]; then
             ping_stats="100% packet loss (host unreachable)"
             if ! $JSON_OUTPUT; then
                 echo "  $ping_stats"
             fi
         else
-            local rtt_min=$(echo "$ping_output" | grep "rtt min/avg/max/mdev" | awk -F'/' '{print $4}')
-            local rtt_avg=$(echo "$ping_output" | grep "rtt min/avg/max/mdev" | awk -F'/' '{print $5}')
-            local rtt_max=$(echo "$ping_output" | grep "rtt min/avg/max/mdev" | awk -F'/' '{print $6}')
+            local rtt_line; rtt_line=$(echo "$ping_output" | grep "rtt min/avg/max/mdev")
+            local rtt_min; rtt_min=$(echo "$rtt_line" | awk '{sub(/.*= /,""); split($0,a,"/"); print a[1]}')
+            local rtt_avg; rtt_avg=$(echo "$rtt_line" | awk '{sub(/.*= /,""); split($0,a,"/"); print a[2]}')
+            local rtt_max; rtt_max=$(echo "$rtt_line" | awk '{sub(/.*= /,""); split($0,a,"/"); print a[3]}')
             if [ -n "$rtt_avg" ]; then
                 ping_stats="min=${rtt_min} ms, avg=${rtt_avg} ms, max=${rtt_max} ms"
             else
@@ -568,7 +595,7 @@ for attempt in range(retry_count):
         local favicon_b64
         favicon_b64=$(echo "$status_output" | grep "^FAVICON:" | sed 's/^FAVICON: //')
         if [ -n "$favicon_b64" ]; then
-            echo "$favicon_b64" | base64 -d > "$FAVICON_PATH" 2>/dev/null
+            echo "${favicon_b64#*,}" | base64 -d > "$FAVICON_PATH" 2>/dev/null
             if [ $? -eq 0 ]; then
                 echo "Favicon saved to $FAVICON_PATH" >&2
             else
@@ -690,19 +717,30 @@ for attempt in range(retry_count):
     fi
 
     if $JSON_OUTPUT; then
-        local status_line=$(echo "$status_output" | grep "^Status:" | sed 's/^Status: //')
-        local version_line=$(echo "$status_output" | grep "^Version:" | sed 's/^Version: //')
-        local motd_line=$(echo "$status_output" | grep "^MOTD:" | sed 's/^MOTD: //')
-        local players_line=$(echo "$status_output" | grep "^Players:" | sed 's/^Players: //')
-        local latency_line=$(echo "$status_output" | grep "^Latency (ms):" | sed 's/^Latency (ms): //')
-        local favicon_line=$(echo "$status_output" | grep "^FAVICON:" | sed 's/^FAVICON: //')
+        local status_line
+        status_line=$(echo "$status_output" | grep "^Status:" | sed 's/^Status: //')
+        local version_line
+        version_line=$(echo "$status_output" | grep "^Version:" | sed 's/^Version: //')
+        local motd_line
+        motd_line=$(echo "$status_output" | grep "^MOTD:" | sed 's/^MOTD: //')
+        local players_line
+        players_line=$(echo "$status_output" | grep "^Players:" | sed 's/^Players: //')
+        local latency_line
+        latency_line=$(echo "$status_output" | grep "^Latency (ms):" | sed 's/^Latency (ms): //')
+        local favicon_line
+        favicon_line=$(echo "$status_output" | grep "^FAVICON:" | sed 's/^FAVICON: //')
 
         if [ "$SHORT_OUTPUT" = false ]; then
-            local protocol_line=$(echo "$status_output" | grep "^Protocol:" | sed 's/^Protocol: //')
-            local software_line=$(echo "$status_output" | grep "^Software:" | sed 's/^Software: //')
-            local plugins_line=$(echo "$status_output" | grep "^Plugins" | sed 's/^Plugins[^:]*: //')
-            local player_sample_line=$(echo "$status_output" | grep "^Online players sample:" | sed 's/^Online players sample: //')
-            local error_line=$(echo "$status_output" | grep "^ERROR:" | sed 's/^ERROR: //')
+            local protocol_line
+            protocol_line=$(echo "$status_output" | grep "^Protocol:" | sed 's/^Protocol: //')
+            local software_line
+            software_line=$(echo "$status_output" | grep "^Software:" | sed 's/^Software: //')
+            local plugins_line
+            plugins_line=$(echo "$status_output" | grep "^Plugins" | sed 's/^Plugins[^:]*: //')
+            local player_sample_line
+            player_sample_line=$(echo "$status_output" | grep "^Online players sample:" | sed 's/^Online players sample: //')
+            local error_line
+            error_line=$(echo "$status_output" | grep "^ERROR:" | sed 's/^ERROR: //')
             jq -n \
                 --arg server "$SERVER" \
                 --arg port "$PORT" \
@@ -755,7 +793,8 @@ for attempt in range(retry_count):
                     "ping_stats": $ping
                 }'
         else
-            local error_line=$(echo "$status_output" | grep "^ERROR:" | sed 's/^ERROR: //')
+            local error_line
+            error_line=$(echo "$status_output" | grep "^ERROR:" | sed 's/^ERROR: //')
             jq -n \
                 --arg server "$SERVER" \
                 --arg port "$PORT" \
