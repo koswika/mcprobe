@@ -30,6 +30,8 @@ CSV_FILE=""
 NO_CLEAR=false
 BEDROCK=false
 LIST_FILE=""
+DIFF_ONLY=false
+LAST_DIFF_KEY=""
 
 is_int() {
   [[ "$1" =~ ^-?[0-9]+$ ]]
@@ -54,6 +56,7 @@ case $1 in
     echo ""
     echo "Options:"
     echo "  --watch N               Refresh every N seconds"
+    echo "  --diff                  With --watch, only print full output when status/players/version changes"
     echo "  --bedrock               Query a Bedrock edition server"
     echo "  --list FILE             Query every server listed in FILE (host[:port] per line)"
     echo "  --discord WEBHOOK_URL   Send Discord embeds to the given webhook"
@@ -98,6 +101,10 @@ case $1 in
     ;;
   --bedrock)
     BEDROCK=true
+    shift
+    ;;
+  --diff)
+    DIFF_ONLY=true
     shift
     ;;
   --list)
@@ -849,12 +856,31 @@ run_target() {
   fi
 }
 
+declare -A DIFF_KEYS
+
+run_target_diffed() {
+  local key captured sig
+  key="${SERVER}:${PORT}"
+  captured=$(run_target)
+  sig=$(echo "$captured" | grep -E "^(Status:|Players:|Version:)" | tr '\n' '|')
+  if [ "${DIFF_KEYS[$key]:-}" != "$sig" ]; then
+    DIFF_KEYS[$key]="$sig"
+    echo "$captured"
+  else
+    echo "$(date '+%Y-%m-%d %H:%M:%S') | $key | no change"
+  fi
+}
+
 if [ "$WATCH_SECONDS" -gt 0 ] 2>/dev/null; then
   while true; do
-    if [ "$JSON_OUTPUT" = false ] && [ "$NO_CLEAR" = false ]; then
+    if [ "$JSON_OUTPUT" = false ] && [ "$NO_CLEAR" = false ] && [ "$DIFF_ONLY" = false ]; then
       clear
     fi
-    run_target
+    if [ "$DIFF_ONLY" = true ] && [ "$JSON_OUTPUT" = false ] && [ -z "$LIST_FILE" ]; then
+      run_target_diffed
+    else
+      run_target
+    fi
     sleep "$WATCH_SECONDS"
   done
 else
