@@ -1,5 +1,4 @@
 #!/bin/bash
-
 set -e
 
 INSTALL_URL="https://raw.githubusercontent.com/koswika/mcprobe/main/mcprobe.sh"
@@ -12,17 +11,32 @@ if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; t
     exit 1
 fi
 
+SUDO=""
+if [ "$(id -u)" -ne 0 ]; then
+    if command -v sudo &>/dev/null; then
+        SUDO="sudo"
+    else
+        echo "Error: this script needs root privileges to write to $INSTALL_PATH, and 'sudo' was not found."
+        echo "Re-run as root, or install sudo first."
+        exit 1
+    fi
+fi
+
 if ! command -v curl &>/dev/null; then
     if command -v apt-get &>/dev/null; then
-        sudo apt-get install -y curl
+        $SUDO apt-get install -y curl
     elif command -v dnf &>/dev/null; then
-        sudo dnf install -y curl
+        $SUDO dnf install -y curl
+    elif command -v yum &>/dev/null; then
+        $SUDO yum install -y curl
     elif command -v pacman &>/dev/null; then
-        sudo pacman -S --noconfirm curl
+        $SUDO pacman -S --noconfirm curl
     elif command -v zypper &>/dev/null; then
-        sudo zypper install -y curl
+        $SUDO zypper install -y curl
     elif command -v apk &>/dev/null; then
-        sudo apk add curl
+        $SUDO apk add curl
+    elif command -v brew &>/dev/null; then
+        brew install curl
     else
         echo "Error: curl not found and could not be installed automatically."
         exit 1
@@ -30,8 +44,22 @@ if ! command -v curl &>/dev/null; then
 fi
 
 echo "Downloading mcprobe..."
-sudo curl -fsSL "$INSTALL_URL" -o "$INSTALL_PATH"
-sudo chmod +x "$INSTALL_PATH"
+TMP_FILE="$(mktemp)"
+trap 'rm -f "$TMP_FILE"' EXIT
+
+if ! curl -fsSL "$INSTALL_URL" -o "$TMP_FILE"; then
+    echo "Error: failed to download mcprobe from $INSTALL_URL"
+    exit 1
+fi
+
+if [ ! -s "$TMP_FILE" ] || ! head -1 "$TMP_FILE" | grep -q '^#!'; then
+    echo "Error: downloaded file does not look like a valid script. Aborting install."
+    exit 1
+fi
+
+chmod +x "$TMP_FILE"
+$SUDO mv "$TMP_FILE" "$INSTALL_PATH"
+trap - EXIT
 
 echo "mcprobe installed to $INSTALL_PATH"
 echo "Run: mcprobe <server>"
