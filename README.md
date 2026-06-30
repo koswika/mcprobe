@@ -9,7 +9,7 @@
 
 # mcprobe
 
-Query Minecraft servers from the command line. Shows DNS records, version, player count, MOTD, latency, software, plugins, and online players — for both Java and Bedrock edition servers.
+Query Minecraft servers from the command line. Shows DNS records, version, player count, MOTD, latency, software, plugins, and online players, for both Java and Bedrock edition servers.
 
 Started this because I got tired of alt-tabbing into the game just to see if a server was up. It's grown a bit since then.
 
@@ -20,9 +20,9 @@ Started this because I got tired of alt-tabbing into the game just to see if a s
 - ICMP ping stats alongside the Minecraft protocol latency
 - Watch mode (`--watch N`) for polling on an interval, with a `--diff` mode that only prints when something actually changes
 - Discord and Slack webhook notifications, with `--alert` to only fire on status changes instead of every poll
-- Player watch — get notified when a specific player joins or leaves
+- Player watch: get notified when a specific player joins or leaves
 - JSON output for piping into other tools, plus CSV and plain log file output for tracking uptime over time
-- Batch mode — point it at a file of servers and it'll check all of them
+- Batch mode: point it at a file of servers and it'll check all of them
 - Favicon extraction (`--favicon`)
 - Min/max player alerting
 
@@ -30,7 +30,7 @@ Started this because I got tired of alt-tabbing into the game just to see if a s
 
 - bash
 - python3 (the script will try to install it if missing)
-- `dig`, `curl`, `jq` — also auto-installed if not found
+- `dig`, `curl`, `jq`, also auto-installed if not found
 - one of: apt, dnf, yum, pacman, zypper, brew, or apk, for the auto-install step to work. If you're on something else, just install python3/dig/curl/jq yourself first and it'll skip straight past that.
 
 The script sets up a local Python venv at `~/.local/share/mcprobe_venv` on first run and installs `mcstatus` into it, so it won't touch your system Python packages.
@@ -97,7 +97,7 @@ where `servers.txt` is just one `host[:port]` per line, `#` comments allowed.
 | `--watch N` | Refresh every N seconds |
 | `--diff` | With `--watch`, only print full output when status/players/version changes |
 | `--bedrock` | Query a Bedrock edition server instead of Java |
-| `--player-watch NAMES` | Comma-separated player names — alerts on join/leave (needs query protocol enabled on the server) |
+| `--player-watch NAMES` | Comma-separated player names, alerts on join/leave (needs query protocol enabled on the server) |
 | `--list FILE` | Query every server listed in FILE |
 | `--discord WEBHOOK_URL` | Send Discord embeds to the given webhook |
 | `--discord-name NAME` | Custom name for the Discord webhook |
@@ -107,7 +107,7 @@ where `servers.txt` is just one `host[:port]` per line, `#` comments allowed.
 | `--json` | Output raw JSON instead of human-readable text |
 | `--ping` | Ping the resolved IP (3 packets) and show stats |
 | `--alert` | With `--watch` and a webhook, only send on status change |
-| `--short` | Minimal output — server, players, latency, MOTD only |
+| `--short` | Minimal output, server, players, latency, MOTD only |
 | `--favicon [FILE]` | Save the server favicon as a PNG (default: `server_icon.png`) |
 | `--no-geo` | Skip geolocation lookup |
 | `--no-dns` | Skip DNS and SRV lookups |
